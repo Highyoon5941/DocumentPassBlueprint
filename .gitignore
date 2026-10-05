@@ -1,0 +1,17 @@
+.env
+*.json.key
+*-sa.json
+data/
+work/
+outputs/
+dist/
+build/
+logs/
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+build/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/

@@ -44,12 +44,21 @@
 
 검증 상태 (2026-10-05, offline 백엔드 + 더미 데이터 PDF 80건/평가 400행):
 - `python scripts/smoke_test.py` → ALL SMOKE TESTS PASSED
-- `./scripts/run_tests.sh` → **136 passed** (Gemini 호출 없음, R6)
+- `./scripts/run_tests.sh` → **139 passed** (Gemini 호출 없음, R6)
 - `ruff check src/ scripts/ tests/` → All checks passed
 - `python scripts/verify_dummy.py -g <그룹>` → 두 그룹 모두 **Phase 6 합격**
   (숨김 규칙 3개 전부 `유력` 이상, 순열검정 p=0.002, 잡음 요소는 `확정` 아님)
 - `대책서__CUST_A` → `template.docx`, `대책서__CUST_B` → `template.pptx` (16:9) 생성 확인
 - 모든 Section/Element 에 `evidence_ids` 존재 (근거 없는 요소 0개)
+
+한글 샘플 데이터 검증 (2026-10-06, `Valeo_SVMtrial_sample_data/`, PDF 82건 / 평가 410행):
+- **S1 합격** — PDF 82개, 매칭 오류 4건, CUST_A→docs / CUST_B→slides, 텍스트 레이어 0
+- **S3 합격** — 표기 8종+빈칸 10개 정규화, wide 형식 동일 결과, 엄격도 순서가 정답지와 일치
+  (B 0.747 > C 0.704 > E 0.675 > A 0.671 > **D 0.630 가장 엄격**), 전원합격률 0.350
+- 평가자E 의 특징은 엄격도가 아니라 **서명란 의존** (있음 0.857 vs 없음 0.345, 격차 1위)
+- **S2~S6 은 offline 로 검증 불가** (실 스캔 이미지, fixture 없음 → 판독성 0 으로 정직하게 보고).
+  `vertex` 전환 후 수행. `ocr --dry-run` = 568회 호출
+- 채점 기준은 `_answer_key/정답_README.md` 가 SETUP.md §12 보다 **우선**한다
 
 ## 설계 기준(SETUP.md)과 달라진 점 — 모두 의도적
 | SETUP.md | 이 저장소 | 이유 |

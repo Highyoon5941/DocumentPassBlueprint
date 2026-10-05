@@ -132,6 +132,26 @@ python scripts/verify_dummy.py -g $G --config $CFG  # 숨김 정답 복원 검�
 
 자세한 실행 방법은 **[`docs/Runbook.md`](docs/Runbook.md)** 를 보세요.
 
+### 한글 샘플 데이터 (권장)
+
+`Valeo_SVMtrial_sample_data/` 에 **가상의 한글 8D 대책서 82건 + 5인 평가 시트 410행**과
+채점용 정답지가 있다. 영문 더미보다 실데이터에 가깝다 — 이미지 전용 스캔본, 표기 혼재
+(Pass/합격/P/OK, Fail/불합격/F/NG), 빈칸 10개, **의도된 매칭 오류 4건**.
+
+```bash
+cp -r Valeo_SVMtrial_sample_data/data/raw/. data/raw/
+python -m svmtrial ingest && python -m svmtrial labels
+```
+
+PDF 바이너리(40MB)는 git 에서 제외돼 있고 생성 스크립트로 **같은 내용이 재현된다**.
+
+```bash
+python Valeo_SVMtrial_sample_data/tools/make_sample_data.py     --out Valeo_SVMtrial_sample_data --n 40 --seed 7
+```
+
+S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](docs/Runbook.md) 에 있다.
+**S2 OCR 부터는 `vertex` 백엔드가 필요하다** (실 스캔 이미지는 offline 스텁이 읽지 못한다).
+
 ---
 
 ## 문서
@@ -204,7 +224,7 @@ python -m svmtrial <명령> [--group G] [--dry-run] [--force] [--config PATH]
 ├─ prompts/             8개 (파일명에 버전 포함, Jinja2 + 기계판독 데이터 블록)
 ├─ scripts/             smoke_test / check_gemini / make_dummy_data
 │                       build_release / verify_dummy / run_tests.sh
-├─ tests/               10개 모듈, 136개 — Gemini 는 전부 mock
+├─ tests/               10개 모듈, 139개 — Gemini 는 전부 mock
 ├─ windows/             setup_windows.bat / run_windows.bat / README
 ├─ config/config.yaml   모든 하이퍼파라미터
 ├─ docs/                Architecture / Runbook / migration_vertexAI / SETUP
@@ -222,10 +242,19 @@ offline 백엔드 + 더미 데이터(PDF 80건 / 평가 400행) 기준:
 | 항목 | 결과 |
 |---|---|
 | `python scripts/smoke_test.py` | ALL SMOKE TESTS PASSED |
-| `./scripts/run_tests.sh` | **136 passed** (Gemini 호출 없음) |
+| `./scripts/run_tests.sh` | **139 passed** (Gemini 호출 없음) |
 | `ruff check src/ scripts/ tests/` | All checks passed |
 | `python scripts/verify_dummy.py` | 두 그룹 모두 **합격** — 숨김 규칙 3개 전부 `유력` 이상, 순열검정 p=0.002, 잡음은 `확정` 아님 |
 | 출력물 | `CUST_A` → `template.docx`, `CUST_B` → `template.pptx` (16:9). 모든 요소에 근거 ID 존재 (누락 0개) |
+
+한글 샘플 데이터(PDF 82건 / 평가 410행) 기준 — 정답지 대조:
+
+| 단계 | 결과 |
+|---|---|
+| S1 ingest | ✅ PDF 82개, 매칭 오류 4건, CUST_A→docs / CUST_B→slides, 텍스트 레이어 0 |
+| S3 labels | ✅ 표기 8종+빈칸 10개 정규화, wide 형식 동일 결과, 전원합격률 0.350 |
+| S3 엄격도 | ✅ B 0.747 > C 0.704 > E 0.675 > A 0.671 > **D 0.630(가장 엄격)** — 정답지와 일치 |
+| S2~S6 | ⏸ offline 로는 검증 불가 (실 스캔 이미지). `vertex` 전환 후 수행 — `ocr --dry-run` = 568회 |
 
 테스트는 **Gemini 를 호출하지 않는다.** 네트워크를 쓰려 하면 즉시 실패한다.
 실제 호출 점검은 `scripts/check_gemini.py` 로만 한다.

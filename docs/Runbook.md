@@ -229,6 +229,73 @@ Phase 6 검증: 합격
 
 ---
 
+## 4bis. 한글 샘플 데이터로 검증하기 (권장)
+
+`Valeo_SVMtrial_sample_data/` 에 **가상의 한글 8D 대책서 82건 + 5인 평가 시트**가 들어 있다.
+§4 의 영문 더미보다 실데이터에 가깝고(이미지 전용 스캔본, 표기 혼재, 의도된 오류 포함) 채점용 정답지가 함께 있다.
+
+```bash
+# 데이터 배치 (_answer_key 는 넣지 않는다)
+cp -r Valeo_SVMtrial_sample_data/data/raw/. data/raw/
+
+python -m svmtrial ingest          # S1 — 기본 config 가 data/raw 를 가리킨다
+python -m svmtrial labels          # S3
+```
+
+바이너리는 git 에서 제외돼 있다. 없으면 **같은 내용으로 재생성**된다(결정론, 검증됨).
+
+```bash
+python Valeo_SVMtrial_sample_data/tools/make_sample_data.py     --out Valeo_SVMtrial_sample_data --n 40 --seed 7
+# 한글 폰트가 없으면: sudo apt install fonts-nanum  (또는 --font <ttf 경로>)
+```
+
+### 채점 기준과 실제 결과
+
+정답지는 `Valeo_SVMtrial_sample_data/_answer_key/정답_README.md` 다.
+**SETUP.md §12 의 완료 기준(영문 더미 생성기 기준)과 다르므로 이 샘플에서는 정답지를 우선한다.**
+
+| 단계 | 정답지 기준 | 실제 결과 |
+|---|---|---|
+| S1 | PDF **82개**, 매칭 오류 **4건** | ✅ 82개 / 4건 (`CUST_A_041`, `CUST_A_999`, `CUST_B_041`, `CUST_B_999`) |
+| S1 형식 | CUST_A → docs, CUST_B → slides | ✅ CUST_A 41/41 docs(비율 판정, producer=`MFP Scan Utility 4.2`) / CUST_B 41/41 slides(creator 15 + 비율 26) |
+| S1 텍스트 레이어 | 0 | ✅ 0 (전 82건) |
+| S3 정규화 | 표기 8종 + 빈칸 10개 | ✅ Pass 274 / Fail 126 / 결측 10, 오류 0건 |
+| S3 wide 형식 | long 과 같은 결과 | ✅ 410행 전부 판정 일치 |
+| S3 엄격도 | B 0.75 > C 0.70 > E 0.68 ≈ A 0.67 > **D 0.63(가장 엄격)** | ✅ B 0.747 > C 0.704 > E 0.675 > A 0.671 > **D 0.630** |
+| S3 전원합격률 | 0.35 | ✅ 0.350 (28/80) |
+
+> **엄격도는 82건 전체(풀링) 기준이다.** 고객사별 40건으로 쪼개면 표본 노이즈 때문에
+> CUST_B 에서는 평가자C 가 가장 엄격하게 나온다. 정답지 수치와 맞추려면 전체를 합쳐 본다
+> (`config.analysis.pool_customers: true`).
+>
+> **평가자E 의 특징은 엄격도가 아니라 서명란 의존이다.** 데이터 수준에서 확인된다 —
+> 표지 서명란이 있을 때 Pass율 0.857 vs 없을 때 0.345 (격차 +0.512로 5명 중 가장 크다.
+> 2위 평가자D 는 +0.248). 이것이 **S5 평가자별 모델**에서 드러나려면 OCR 이 서명란을
+> 읽어야 하므로 `vertex` 백엔드가 필요하다.
+
+### ⚠ offline 백엔드로는 S2 부터 검증할 수 없다
+
+샘플 PDF 는 실제 스캔 이미지이고 offline 스텁에는 대응 fixture 가 없다. 확인된 동작:
+
+```
+mean_legibility        0.0
+docs_low_legibility    ["CUST_A_001", "CUST_A_002", "CUST_A_003"]
+total_headings/tables/figures   0 / 0 / 0
+```
+
+**조용히 틀린 답을 주지 않고 판독 불량으로 보고한다.** 따라서 S2~S6 검증은
+[`migration_vertexAI.md`](migration_vertexAI.md) 로 전환한 뒤에 한다. 전체 규모는 미리 확인할 수 있다.
+
+```bash
+python -m svmtrial ocr --dry-run     # 568회 호출 / 약 1,022,400 토큰 (페이지 568장)
+```
+
+정답지는 전환 후 다음을 기대한다 — 5Why 표 `확정`, 효과검증 그래프 전체·CUST_B `확정`,
+수평전개 표 `유력`/`참고`, 현물 사진 `기각`(40건으로는 검출 불가), 미끼 3종(일정표·강조박스·부록) `기각`.
+고객사별 40건에서는 5Why 만 유의하게 나오며, 리포트가 **"탐색적"** 경고를 띄우는지도 확인 대상이다.
+
+---
+
 ## 5. 실데이터로 돌리기
 
 > ⚠ **먼저 [`migration_vertexAI.md`](migration_vertexAI.md) 를 따라 `SVMTRIAL_BACKEND=vertex` 로 전환해야 한다.**

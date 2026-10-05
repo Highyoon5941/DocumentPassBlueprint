@@ -152,6 +152,41 @@ def decide_doc_format(s: Settings, meta: DocMeta, gc: GeminiClient | None, pages
     return meta
 
 
+def _write_issues(s: Settings, g: Group, issues: list[dict]) -> Path | None:
+    """그룹별 이슈를 쓰고, 전역 `work/ingest_issues.csv` 를 모든 그룹의 합집합으로 다시 만든다.
+
+    전역 파일을 그룹마다 덮어쓰면 마지막 그룹의 이슈만 남는다(SETUP.md §7.1 은 단일 파일을
+    요구한다). 그룹별 파일을 원본으로 두고 매번 합쳐 쓰므로, 한 그룹만 다시 ingest 해도
+    다른 그룹의 이슈가 사라지지 않고 그 그룹의 이슈는 갱신된다(멱등).
+    """
+    import pandas as pd
+
+    out = s.work / "ingest"
+    out.mkdir(parents=True, exist_ok=True)
+    per_group = out / f"{g.safe}.issues.csv"
+    rows = [{"group": g.key, **i} for i in issues]
+    if rows:
+        pd.DataFrame(rows).to_csv(per_group, index=False, encoding="utf-8")
+    elif per_group.exists():
+        per_group.unlink()          # 이슈가 해소되면 그룹 파일도 지운다
+
+    merged: list[pd.DataFrame] = []
+    for f in sorted(out.glob("*.issues.csv")):
+        try:
+            merged.append(pd.read_csv(f))
+        except (OSError, ValueError):
+            continue
+    global_f = s.work / "ingest_issues.csv"
+    if merged:
+        df = pd.concat(merged, ignore_index=True).drop_duplicates(subset=["group", "doc_id", "issue"])
+        df = df.sort_values(["group", "doc_id"]).reset_index(drop=True)
+        df.to_csv(global_f, index=False, encoding="utf-8")
+        return global_f
+    if global_f.exists():
+        global_f.unlink()
+    return None
+
+
 def run(
     s: Settings,
     g: Group,
@@ -185,10 +220,7 @@ def run(
         for d in sorted(pdf_ids - label_doc_ids):
             issues.append({"doc_id": d, "issue": "PDF는 있으나 평가 시트에 없음", "path": ""})
 
-    if issues:
-        import pandas as pd
-
-        pd.DataFrame(issues).to_csv(s.work / "ingest_issues.csv", index=False, encoding="utf-8")
+    _write_issues(s, g, issues)
 
     fmt_votes = [m.doc_format for m in metas]
     group_format = max(set(fmt_votes), key=fmt_votes.count) if fmt_votes else "docs"
@@ -203,6 +235,8 @@ def run(
                            for src in {m.doc_format_source for m in metas}},
         "n_with_text_layer": sum(1 for m in metas if m.has_text_layer),
         "n_issues": len(issues),
+        "issues_file": (str((s.work / "ingest_issues.csv").relative_to(s.root))
+                        if (s.work / "ingest_issues.csv").exists() else None),
         "doc_ids": sorted(pdf_ids),
     }
     out = s.work / "ingest"

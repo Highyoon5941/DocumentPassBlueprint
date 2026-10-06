@@ -11,6 +11,8 @@
 | `docs/Architecture.md` | 전체 아키텍처와 기본 개념 (Concept Bottleneck, 통계 설계, 모듈 지도, 한계) |
 | `docs/Runbook.md` | 실행 방법 (명령 목록, 더미/실데이터 절차, 🔒 관문 검토 기준, 산출물 읽는 법, 문제 해결) |
 | `docs/migration_vertexAI.md` | 사내망 Vertex AI 전환. **§1 에 사람이 직접 받아와야 하는 항목(M1~M16)** 이 정리돼 있다 |
+| `docs/alternatives_withoutLLM.md` | **제안서.** LLM 없이 — 로컬 OCR(P1~P8) + SVM 대체 모델(M1~M14). 샘플 데이터 실측 비교 포함 |
+| `docs/alternatives_withLLM.md` | **제안서.** LLM 사용 + SVM 제거 — 계층 로지스틱/평가자 페르소나/루브릭/쌍대비교 등(L1~L12) |
 
 ## 이 저장소의 환경
 - conda 환경 이름: **`Valeo_SVM_Trial`** (SETUP.md §5.2의 `valeo_svm`에서 변경. 사용자 지시)

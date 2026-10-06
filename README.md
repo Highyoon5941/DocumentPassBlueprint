@@ -162,6 +162,8 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | **[`docs/Runbook.md`](docs/Runbook.md)** | 실행 방법 — 명령 목록, 더미/실데이터 절차, 🔒 관문에서 무엇을 봐야 하는지, 산출물 읽는 법, 문제 해결 |
 | **[`docs/migration_vertexAI.md`](docs/migration_vertexAI.md)** | 사내망 Vertex AI 전환 — **§1 에 사람이 직접 받아와야 하는 항목(M1~M16)** 과 IT 질문지 |
 | [`docs/Valeo_SVMtrial_SETUP.md`](docs/Valeo_SVMtrial_SETUP.md) | 설계 기준 문서. 모든 결정의 출처 |
+| [`docs/alternatives_withoutLLM.md`](docs/alternatives_withoutLLM.md) | **제안서** — LLM 없이: 로컬 OCR 스택 + SVM 대체 모델(계층 로지스틱·순서형·단조·SLIM 점수표·규칙) |
+| [`docs/alternatives_withLLM.md`](docs/alternatives_withLLM.md) | **제안서** — LLM 사용 + SVM 제거: 평가자 페르소나 시뮬레이션, 루브릭, 쌍대비교, 사례기반 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 
 ---

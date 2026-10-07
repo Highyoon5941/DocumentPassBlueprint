@@ -42,14 +42,23 @@ from svmtrial.textutil import best_section as _best_section
 FIXTURE_REL = "offline_fixtures/pages.json"
 
 # 스텁 규칙을 고칠 때 올린다. 캐시 키에 들어가므로, 규칙이 바뀌면 캐시가 자동 무효화된다.
-STUB_VERSION = "3"
+STUB_VERSION = "6"
 
 
 _TABLE_HINT = re.compile(r"(table|표|목록|list|matrix)", re.IGNORECASE)
 _CHART_HINT = re.compile(r"(\[chart\]|graph|chart|그래프|차트|추이|trend)", re.IGNORECASE)
 _PHOTO_HINT = re.compile(r"(\[photo\]|photo|사진|이미지)", re.IGNORECASE)
 _SIGN_HINT = re.compile(r"(signature|sign|승인|결재|결제|서명|approval|날인|stamp)", re.IGNORECASE)
-_HEAD_HINT = re.compile(r"^\s*(d[0-9]\b|[0-9]+[.)]\s|제?\s*[0-9]+\s*장)", re.IGNORECASE)
+# 제목 번호 패턴. 특정 문서종류에 묶이지 않게 일반화했다.
+#   D4 / R1 / A2 (영문 1~3자 + 숫자) | 1. / 1) | 1.2 / 1.2.3 | 제 3 장 | III.
+# 과거에는 `d[0-9]` 만 받아서 대책서(8D) 외의 문서종류는 제목이 하나도 안 잡혔다.
+_HEAD_HINT = re.compile(
+    r"^\s*(?:[A-Za-z]{1,3}\s?\d+(?:\.\d+)*\b"      # D4, R1, APP2, R1.2
+    r"|\d+(?:\.\d+)*[.)]?\s"                          # 1. / 1) / 1.2 / 1.2.3
+    r"|제?\s*\d+\s*장"                                  # 제3장
+    r"|[IVXivx]{1,5}[.)]\s)",                            # III.
+    re.IGNORECASE,
+)
 _COLS_SPLIT = re.compile(r"\s*[|/]\s*|\s{2,}|\s*>\s*")
 _BOILER = re.compile(r"lorem ipsum", re.IGNORECASE)
 # OCR 개요 텍스트가 붙이는 표기를 개념 문구에서 걷어낸다
@@ -156,24 +165,34 @@ class OfflineBackend:
 
     def _h_section_taxonomy(self, *, data: dict, imgs: list, schema: type[BaseModel]) -> dict:
         titles = [str(t) for t in data.get("titles", [])]
-        seed = data.get("seed") or SEED_8D
+        # seed 가 **빈 목록**인 것과 **키가 아예 없는** 것을 구분해야 한다.
+        # `or` 를 쓰면 빈 목록이 falsy 라서 대책서의 8D 로 되돌아가고,
+        # 새 문서종류가 엉뚱한 섹션 체계를 물려받는다.
+        seed = data["seed"] if "seed" in data else SEED_8D
+        seed = list(seed or [])
         items = [
             {"id": s["id"], "name": s["name"], "synonyms": list(s.get("synonyms", [])), "description": s.get("description", "")}
             for s in seed
         ]
         by_id = {it["id"]: it for it in items}
+        # `titles` 는 중복이 제거된 목록이므로 등장 횟수를 세면 전부 1이 된다.
+        # 문서 수 기준 임계값을 쓰려면 호출부가 함께 넘기는 title_doc_counts 를 봐야 한다.
+        doc_counts = {str(k): int(v) for k, v in (data.get("title_doc_counts") or {}).items()}
         unmatched: Counter[str] = Counter()
         for t in titles:
             sid = _best_section(t, items)
             if sid == "OTHER":
-                unmatched[tu.strip_numbering(t)] += 1
+                unmatched[tu.strip_numbering(t)] += doc_counts.get(t, 1)
             else:
                 syn = by_id[sid]["synonyms"]
                 key = tu.norm(t)
                 if key and key not in {tu.norm(x) for x in syn}:
                     syn.append(tu.strip_numbering(t))
         # 자주 나오지만 seed 에 없는 제목은 새 섹션 후보로 올린다(사람이 🔒에서 검토).
-        for i, (t, c) in enumerate(x for x in unmatched.most_common(8) if x[1] >= 2):
+        # seed 가 없는 문서종류는 분류체계 전체를 데이터에서 만들어야 하므로 상한을 넉넉히 둔다.
+        cap = 8 if seed else 24
+        min_docs = 2 if seed else max(2, int(0.2 * int(data.get("n_docs") or 0)) or 2)
+        for i, (t, c) in enumerate(x for x in unmatched.most_common(cap) if x[1] >= min_docs):
             items.append(
                 {
                     "id": f"X{i + 1}",

@@ -165,6 +165,8 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | [`docs/alternatives_withoutLLM.md`](docs/alternatives_withoutLLM.md) | **제안서** — LLM 없이: 로컬 OCR 스택 + SVM 대체 모델(계층 로지스틱·순서형·단조·SLIM 점수표·규칙) |
 | [`docs/alternatives_withLLM.md`](docs/alternatives_withLLM.md) | **제안서** — LLM 사용 + SVM 제거: 평가자 페르소나 시뮬레이션, 루브릭, 쌍대비교, 사례기반 |
 | [`docs/1007.md`](docs/1007.md) | 2026-10-07 검토일지 — 측정값 모음, 재현 명령, 정정 사항, 미결 과제 |
+| [`docs/1007_night_SVM.md`](docs/1007_night_SVM.md) | **구현보고서** — 학습 없이 SVM을 쓰는 방식, 문서종류 불변성 실증 |
+| [`docs/1007_night_alternatives.md`](docs/1007_night_alternatives.md) | SVM 외 대안, 로지스틱 구현 방향, Claude 전환 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 
 ---

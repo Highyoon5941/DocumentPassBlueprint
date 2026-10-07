@@ -164,6 +164,7 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | [`docs/Valeo_SVMtrial_SETUP.md`](docs/Valeo_SVMtrial_SETUP.md) | 설계 기준 문서. 모든 결정의 출처 |
 | [`docs/alternatives_withoutLLM.md`](docs/alternatives_withoutLLM.md) | **제안서** — LLM 없이: 로컬 OCR 스택 + SVM 대체 모델(계층 로지스틱·순서형·단조·SLIM 점수표·규칙) |
 | [`docs/alternatives_withLLM.md`](docs/alternatives_withLLM.md) | **제안서** — LLM 사용 + SVM 제거: 평가자 페르소나 시뮬레이션, 루브릭, 쌍대비교, 사례기반 |
+| [`docs/1007.md`](docs/1007.md) | 2026-10-07 검토일지 — 측정값 모음, 재현 명령, 정정 사항, 미결 과제 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 
 ---

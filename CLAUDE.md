@@ -16,6 +16,7 @@
 | `docs/1007.md` | 2026-10-07 검토일지 — 대안 문서 2종 작성, L1 학습 비용/역할 분리 Q&A, **정정 3건(C1~C3)**, 미결 사항 |
 | `docs/1007_night_SVM.md` | **구현보고서(브랜치 `SVM`).** 학습 없는 SVM 활용 — 무상태 보증, 문서종류 불변성 실증(요구사양서), 발견·수정한 버그 3건 |
 | `docs/1007_night_alternatives.md` | SVM 외 대안과 **로지스틱 구현 방향 3단계**, Claude 백엔드 전환 스케치 |
+| `docs/claude_backend_guide.md` | **Claude 백엔드 적용 방법.** 설치→인증→데이터 배치→비용 산정→소규모 검증→전체 실행→문제 해결 |
 
 ## 이 저장소의 환경
 - conda 환경 이름: **`Valeo_SVM_Trial`** (SETUP.md §5.2의 `valeo_svm`에서 변경. 사용자 지시)
@@ -27,11 +28,13 @@
 `.env`의 `SVMTRIAL_BACKEND`가 Gemini 호출 경로를 고른다.
 | 값 | 동작 | 용도 |
 |---|---|---|
-| `offline` | Gemini를 호출하지 않고 `src/svmtrial/offline_backend.py`의 결정론적 규칙으로 같은 스키마의 응답을 만든다 | **이 개발 PC의 기본값.** 사내망/GCP 접근이 없는 환경에서 전체 파이프라인을 검증한다 |
-| `vertex` | `google-genai`로 실제 Vertex AI를 호출한다 (SETUP.md §3) | 사내망 실업무 환경 |
+| `claude` | `anthropic` SDK로 Claude를 호출한다 (`claude_backend.py`). 인증은 `ANTHROPIC_API_KEY` 한 줄 | **실업무 권장 경로.** 적용 방법은 `docs/claude_backend_guide.md` |
+| `vertex` | `google-genai`로 Vertex AI(Gemini)를 호출한다 (SETUP.md §3) | 사내 GCP 프로젝트를 쓸 때 |
+| `offline` | LLM을 호출하지 않고 `offline_backend.py`의 결정론적 규칙으로 같은 스키마의 응답을 만든다 | 기본값. **실데이터 분석 불가** — 더미/샘플로 파이프라인 검증 |
 
 전환 절차와 사람이 직접 받아와야 하는 값은 **`docs/migration_vertexAI.md`**에 있다.
 `offline` 백엔드는 OCR 단계에서 `make_dummy_data.py`가 만든 fixture에 의존하므로 **실데이터에는 쓸 수 없다.**
+실데이터는 `claude`(권장) 또는 `vertex` 로 전환한다.
 
 ## 현재 Phase
 | Phase | 상태 |

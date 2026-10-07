@@ -132,6 +132,16 @@ def doctor(config: ConfigOpt = None) -> None:
         "평가 시트 경로": f"{s.p('labels')} ({'있음' if s.p('labels').exists() else '없음'})",
         "타깃": s.analysis.target,
     }
+    if s.backend == "claude":
+        import os as _os
+
+        has_key = bool(_os.getenv("ANTHROPIC_API_KEY") or _os.getenv("ANTHROPIC_AUTH_TOKEN"))
+        rows["claude.model_fast"] = s.claude.model_fast
+        rows["claude.model_pro"] = s.claude.model_pro
+        rows["claude.effort"] = f"fast={s.claude.effort_fast} / pro={s.claude.effort_pro}"
+        rows["claude.prompt_cache"] = str(s.claude.prompt_cache)
+        rows["ANTHROPIC_API_KEY"] = "설정됨" if has_key else "(없음 — `ant auth login` 프로필도 가능)"
+
     hy = check_interpreter_hygiene()
     rows["PYTHONPATH 위생"] = "OK" if not hy else hy[0][:90]
     gs = discover_groups(s)
@@ -140,6 +150,8 @@ def doctor(config: ConfigOpt = None) -> None:
     if s.backend == "vertex" and not s.project:
         con.print("[red]✗ vertex 백엔드인데 GOOGLE_CLOUD_PROJECT 가 없습니다.[/red]")
         raise typer.Exit(1)
+    if s.backend == "claude":
+        con.print("[dim]연결 점검: python scripts/check_claude.py[/dim]")
     if s.backend == "offline":
         from svmtrial.offline_backend import OfflineBackend
 

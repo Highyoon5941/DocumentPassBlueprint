@@ -20,6 +20,15 @@ gemini:
   media_resolution_ocr: HIGH
   cost_per_1m_tokens: {}          # 사내 단가 확인 후 입력(선택). 예: {input: 0.3, output: 2.5}
   est_tokens_per_page: 1800       # --dry-run 추정용 (입력+출력 대략치)
+claude:
+  # SVMTRIAL_BACKEND=claude 일 때 쓰인다. 모델 ID 에 날짜 접미사를 붙이지 않는다.
+  model_fast: claude-sonnet-5-5    # 대량 호출 (OCR·채점)
+  model_pro: claude-opus-5-5       # 추론 (가설 생성·템플릿 작성)
+  effort_fast: low                 # low | medium | high | xhigh | max
+  effort_pro: high
+  max_tokens: 16000
+  prompt_cache: true               # 고정 지시문을 system 에 캐시 (반복 호출 비용 절감)
+  sdk_max_retries: 2
 ocr:
   min_legibility: 0.5
 analysis:

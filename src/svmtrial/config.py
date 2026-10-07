@@ -70,6 +70,18 @@ class GeminiCfg(BaseModel):
     est_tokens_per_page: int = 1800
 
 
+class ClaudeCfg(BaseModel):
+    """Claude(Anthropic API) 백엔드 설정. 모델 ID 는 날짜 접미사를 붙이지 않는다."""
+
+    model_fast: str = "claude-sonnet-5-5"   # 대량 호출 (OCR·채점)
+    model_pro: str = "claude-opus-5-5"      # 추론 (가설 생성·템플릿 작성)
+    effort_fast: str = "low"                # low | medium | high | xhigh | max
+    effort_pro: str = "high"
+    max_tokens: int = 16000
+    prompt_cache: bool = True               # 고정 지시문을 system 에 캐시
+    sdk_max_retries: int = 2                # SDK 자체 재시도 (tenacity 가 한 겹 더 감싼다)
+
+
 class OcrCfg(BaseModel):
     min_legibility: float = 0.5
 
@@ -138,6 +150,7 @@ class Settings(BaseModel):
     labels: LabelsCfg = LabelsCfg()
     ingest: IngestCfg = IngestCfg()
     gemini: GeminiCfg = GeminiCfg()
+    claude: ClaudeCfg = ClaudeCfg()
     ocr: OcrCfg = OcrCfg()
     analysis: AnalysisCfg = AnalysisCfg()
     template: TemplateCfg = TemplateCfg()
@@ -165,7 +178,17 @@ class Settings(BaseModel):
         return self.root / "prompts"
 
     def model_for(self, tier: str) -> str:
-        """tier: 'fast' | 'pro'. offline 백엔드에서는 ID가 없어도 된다."""
+        """tier: 'fast' | 'pro'. 백엔드에 따라 모델 ID 출처가 다르다.
+
+        claude  : config/.env 의 claude.model_* (기본값이 있어 비어 있어도 동작)
+        vertex  : .env 의 GEMINI_MODEL_* (필수)
+        offline : ID 불필요
+        """
+        if self.backend == "claude":
+            name = self.claude.model_fast if tier == "fast" else self.claude.model_pro
+            if not name:
+                raise RuntimeError(f"config 의 claude.model_{tier} 가 비어 있습니다.")
+            return name
         name = self.gemini.model_fast if tier == "fast" else self.gemini.model_pro
         if not name:
             if self.backend == "offline":
@@ -197,8 +220,10 @@ def load_settings(root: Path | str | None = None, config_path: Path | str | None
     raw = _subst_env(raw or {})
 
     backend = (os.getenv("SVMTRIAL_BACKEND") or "offline").strip().lower()
-    if backend not in {"offline", "vertex"}:
-        raise RuntimeError(f"SVMTRIAL_BACKEND 값이 잘못됐습니다: {backend!r} (offline | vertex)")
+    if backend not in {"offline", "vertex", "claude"}:
+        raise RuntimeError(
+            f"SVMTRIAL_BACKEND 값이 잘못됐습니다: {backend!r} (offline | vertex | claude)"
+        )
 
     def sec(name: str) -> dict:
         v = raw.get(name) or {}
@@ -213,6 +238,7 @@ def load_settings(root: Path | str | None = None, config_path: Path | str | None
         labels=LabelsCfg(**sec("labels")),
         ingest=IngestCfg(**sec("ingest")),
         gemini=GeminiCfg(**sec("gemini")),
+        claude=ClaudeCfg(**sec("claude")),
         ocr=OcrCfg(**sec("ocr")),
         analysis=AnalysisCfg(**sec("analysis")),
         template=TemplateCfg(**sec("template")),

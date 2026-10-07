@@ -51,6 +51,8 @@ class Usage:
     prompt_tokens: int = 0
     output_tokens: int = 0
     thoughts_tokens: int = 0
+    cache_read_tokens: int = 0     # 프롬프트 캐시에서 읽은 입력 토큰 (Claude)
+    cache_write_tokens: int = 0    # 프롬프트 캐시에 쓴 입력 토큰 (Claude)
 
 
 @dataclass
@@ -92,6 +94,10 @@ class GeminiClient:
                 from svmtrial.vertex_backend import VertexBackend
 
                 self._backend = VertexBackend(self.s)
+            elif self.s.backend == "claude":
+                from svmtrial.claude_backend import ClaudeBackend
+
+                self._backend = ClaudeBackend(self.s)
             else:
                 from svmtrial.offline_backend import OfflineBackend
 
@@ -108,6 +114,9 @@ class GeminiClient:
             from svmtrial.offline_backend import STUB_VERSION
 
             return f"offline/v{STUB_VERSION}"
+        if self.s.backend == "claude":
+            # effort 가 결과에 영향을 주므로 키에 포함한다
+            return f"claude/{self.s.claude.effort_fast}/{self.s.claude.effort_pro}"
         return f"vertex/{self.s.project}/{self.s.location}"
 
     # ------------------------------------------------------------ 로깅
@@ -167,6 +176,8 @@ class GeminiClient:
             self.usage_total.prompt_tokens += usage.prompt_tokens
             self.usage_total.output_tokens += usage.output_tokens
             self.usage_total.thoughts_tokens += usage.thoughts_tokens
+            self.usage_total.cache_read_tokens += usage.cache_read_tokens
+            self.usage_total.cache_write_tokens += usage.cache_write_tokens
         self._log(
             {
                 "run_id": self.run_id,
@@ -180,6 +191,8 @@ class GeminiClient:
                 "prompt_tokens": usage.prompt_tokens,
                 "output_tokens": usage.output_tokens,
                 "thoughts_tokens": usage.thoughts_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
             }
         )
         return obj
@@ -265,6 +278,8 @@ class GeminiClient:
                 "prompt": self.usage_total.prompt_tokens,
                 "output": self.usage_total.output_tokens,
                 "thoughts": self.usage_total.thoughts_tokens,
+                "cache_read": self.usage_total.cache_read_tokens,
+                "cache_write": self.usage_total.cache_write_tokens,
             },
         }
         if self.dry_run:

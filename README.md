@@ -167,6 +167,7 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | [`docs/1007.md`](docs/1007.md) | 2026-10-07 검토일지 — 측정값 모음, 재현 명령, 정정 사항, 미결 과제 |
 | [`docs/1007_night_SVM.md`](docs/1007_night_SVM.md) | **구현보고서** — 학습 없이 SVM을 쓰는 방식, 문서종류 불변성 실증 |
 | [`docs/1007_night_alternatives.md`](docs/1007_night_alternatives.md) | SVM 외 대안, 로지스틱 구현 방향, Claude 전환 |
+| [`docs/claude_backend_guide.md`](docs/claude_backend_guide.md) | **Claude 백엔드 적용 방법** — 설치·인증·비용 산정·소규모 검증·문제 해결 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 
 ---
@@ -177,8 +178,9 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 
 | 값 | 동작 | 용도 |
 |---|---|---|
-| `offline` | Gemini 를 호출하지 않고 결정론 규칙으로 **같은 스키마**의 응답을 만든다 | **기본값.** GCP 접근이 없는 개발 환경에서 전체 파이프라인 검증 |
-| `vertex` | `google-genai` 로 실제 Vertex AI 호출 | 사내망 실업무 |
+| `claude` | `anthropic` SDK 로 Claude 호출. 인증은 **API 키 한 줄** | **실업무 권장** → [적용 방법](docs/claude_backend_guide.md) |
+| `vertex` | `google-genai` 로 Vertex AI(Gemini) 호출 | 사내 GCP 프로젝트를 쓸 때 |
+| `offline` | LLM 없이 결정론 규칙으로 **같은 스키마**의 응답 | 기본값. 더미/샘플 검증 전용 |
 
 두 백엔드가 같은 pydantic 스키마를 돌려주므로 **전환 시 코드는 한 줄도 바뀌지 않는다** (`.env` 만 수정).
 캐시 키에 백엔드 이름이 들어가므로 offline 스텁 응답이 vertex 전환 후 재사용되는 일은 없다.

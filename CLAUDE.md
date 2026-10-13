@@ -14,7 +14,7 @@
 | `docs/alternatives_withoutLLM.md` | **제안서.** LLM 없이 — 로컬 OCR(P1~P8) + SVM 대체 모델(M1~M14). 샘플 데이터 실측 비교 포함 |
 | `docs/alternatives_withLLM.md` | **제안서.** LLM 사용 + SVM 제거 — 계층 로지스틱/평가자 페르소나/루브릭/쌍대비교 등(L1~L12) |
 | `docs/1007.md` | 2026-10-07 검토일지 — 대안 문서 2종 작성, L1 학습 비용/역할 분리 Q&A, **정정 3건(C1~C3)**, 미결 사항 |
-| `docs/1007_night_SVM.md` | **구현보고서(브랜치 `SVM`).** 학습 없는 SVM 활용 — 무상태 보증, 문서종류 불변성 실증(요구사양서), 발견·수정한 버그 3건 |
+| `docs/1007_night_SVM.md` | **구현보고서.** 학습 없는 SVM 활용 — 무상태 보증, 문서종류 불변성 실증(요구사양서), 발견·수정한 버그 3건 |
 | `docs/1007_night_alternatives.md` | SVM 외 대안과 **로지스틱 구현 방향 3단계**, Claude 백엔드 전환 스케치 |
 | `docs/autonomous_pipeline.md` | **자율 기준 선정 + 로지스틱 + 형식 자유 출력.** 사람 의견 배제, LayoutSpec, 목적함수 최적화 |
 | `docs/claude_backend_guide.md` | **Claude 백엔드 적용 방법.** 설치→인증→데이터 배치→비용 산정→소규모 검증→전체 실행→문제 해결 |

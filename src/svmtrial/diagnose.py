@@ -186,12 +186,20 @@ def _markdown(s, g, out: dict, concepts, labels_map: dict[str, str], w: dict[str
     A("")
     A("## 피드백 루프")
     A("")
-    A("평가자들이 이 문서를 실제로 평가하면, 그 결과를 평가 시트에 다음 형식으로 추가하고 "
-      "`svmtrial labels` 부터 다시 실행해 재학습한다.")
-    A("")
-    A("| doc_id | customer | doc_type | rater | result |")
-    A("|---|---|---|---|---|")
-    A(f"| {out['doc_id']} | {g.customer or ''} | {g.doc_type} | (평가자명) | Pass 또는 Fail |")
+    if s.inputdata:
+        A(f"평가자들이 이 문서를 실제로 평가하면, PDF 를 `{s.documents_dir}` 에 넣고 "
+          f"`{s.judgement_path.name}` 에 아래 형식으로 한 행을 추가한 뒤 `svmtrial all` 을 다시 실행한다.")
+        A("")
+        A("| FileName | Person1 | Person2 | … |")
+        A("|---|---|---|---|")
+        A(f"| {out['doc_id']} | p 또는 f(사유) | p 또는 f(사유) | … |")
+    else:
+        A("평가자들이 이 문서를 실제로 평가하면, 그 결과를 평가 시트에 다음 형식으로 추가하고 "
+          "`svmtrial labels` 부터 다시 실행해 재학습한다.")
+        A("")
+        A("| doc_id | customer | doc_type | rater | result |")
+        A("|---|---|---|---|---|")
+        A(f"| {out['doc_id']} | {g.customer or ''} | {g.doc_type} | (평가자명) | Pass 또는 Fail |")
     A("")
     f = out_dir / f"diagnose_{out['doc_id']}.md"
     f.write_text("\n".join(L_), encoding="utf-8")
@@ -199,8 +207,9 @@ def _markdown(s, g, out: dict, concepts, labels_map: dict[str, str], w: dict[str
 
 
 def stage_pdf(src: Path, s: Settings, g: Group) -> Path:
-    """진단 대상 PDF 를 data/raw/pdfs/<doc_type>/<customer>/ 로 복사한다(선택)."""
-    dst_dir = s.p("raw_pdfs", g.doc_type, g.customer or "_")
+    """진단 대상 PDF 를 입력 폴더로 복사한다(선택). inputdata: InputData/Documents/,
+    legacy: data/raw/pdfs/<doc_type>/<customer>/"""
+    dst_dir = s.documents_dir if s.inputdata else s.p("raw_pdfs", g.doc_type, g.customer or "_")
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / Path(src).name
     if Path(src).resolve() != dst.resolve():

@@ -1,8 +1,12 @@
-"""S1 ingest — PDF → 페이지 PNG + 메타 (SETUP.md §8.1).
+"""S1 ingest — PDF → 페이지 이미지 + 메타 (SETUP.md §8.1, 2026-10-14 입력 확정 반영).
 
-- pymupdf 로 페이지마다 PNG 렌더 (Poppler 불필요, R4)
-- 메타: 페이지 수, 페이지별 비율, creator/producer, 텍스트 레이어 유무, 파일 sha256
-- 원본 형식(docs/slides) 판정 4단계
+**모든 PDF 를 먼저 페이지마다 이미지로 바꾸고, 이후 단계는 이미지로만 처리한다.**
+스캔본이든 Word/PowerPoint 에서 내보낸 PDF 든 같은 경로를 탄다.
+
+- pymupdf 로 페이지마다 PNG 렌더 (Poppler 불필요, R4). 긴 변을 `ingest.max_long_edge_px` 안으로 맞춘다
+- 메타: 페이지 수, 페이지별 이미지 크기·비율, 파일 sha256
+  (PDF creator/producer, 텍스트 레이어 유무는 **참고값**으로만 남기고 판단에 쓰지 않는다)
+- 원본 형식(docs/slides) 판정도 이미지로만 한다: 페이지 이미지 비율 → 애매하면 첫 2페이지 비전 판정
 """
 
 from __future__ import annotations
@@ -13,11 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf
+from PIL import Image
 
 from svmtrial import parts as P
+from svmtrial import textutil as tu
 from svmtrial.config import Settings
 from svmtrial.gemini_client import DryRunHit, GeminiClient, load_prompt
-from svmtrial.groups import Group, pdfs_of
+from svmtrial.groups import Group, list_documents, pdfs_of
 from svmtrial.payload import wrap
 from svmtrial.schemas import DocFormatGuess
 
@@ -31,12 +37,15 @@ class DocMeta:
     pdf_path: str
     sha256: str
     n_pages: int
-    page_ratios: list[float]
-    creator: str = ""
-    producer: str = ""
-    has_text_layer: bool = False
+    page_ratios: list[float]                 # 페이지 **이미지**의 가로/세로
+    page_px: list[list[int]] = field(default_factory=list)
+    render_dpi: int = 150
+    creator: str = ""                        # 참고값
+    producer: str = ""                       # 참고값
+    creator_hint: str = ""                   # creator/producer 로 본 형식 (참고값 — 판정에 쓰지 않는다)
+    has_text_layer: bool = False             # 참고값 — 텍스트 레이어는 쓰지 않는다
     doc_format: str = "docs"
-    doc_format_source: str = "ratio"       # creator | ratio | gemini
+    doc_format_source: str = "ratio"         # ratio | vision
     doc_format_confidence: float = 0.0
     pages: list[str] = field(default_factory=list)
 
@@ -75,34 +84,59 @@ def _format_from_ratio(ratios: list[float], thr: float) -> tuple[str | None, flo
     return None, abs(frac - 0.5) * 2
 
 
+def _render_page(page: pymupdf.Page, dpi: float, max_long_edge_px: int) -> pymupdf.Pixmap:
+    """페이지 1장 → 이미지. 긴 변이 max_long_edge_px 를 넘지 않도록 배율을 낮춘다.
+
+    페이지 크기가 제각각인 PDF(A3 도면, 포스터 등)도 비슷한 크기의 이미지가 되게 한다.
+    """
+    r = page.rect
+    long_pt = max(r.width, r.height) or 1.0
+    eff = float(dpi)
+    if max_long_edge_px and long_pt * eff / 72.0 > max_long_edge_px:
+        eff = max_long_edge_px * 72.0 / long_pt
+    z = eff / 72.0
+    return page.get_pixmap(matrix=pymupdf.Matrix(z, z), alpha=False)
+
+
 def render_doc(s: Settings, pdf: Path, out_dir: Path, dpi: int | None = None, force: bool = False) -> DocMeta:
-    """PDF 1건 → work/pages/<doc_id>/pNNN.png + meta.json"""
-    doc_id = pdf.stem
+    """PDF 1건 → work/pages/<doc_id>/pNNN.png + 메타. 이후 단계는 이 이미지만 쓴다."""
+    doc_id = tu.doc_id(pdf.name)
     dpi = dpi or s.ingest.dpi
     pdir = out_dir / doc_id
     pdir.mkdir(parents=True, exist_ok=True)
 
     with pymupdf.open(pdf) as d:
+        if d.needs_pass:
+            raise ValueError("암호가 걸린 PDF")
         md = d.metadata or {}
-        ratios, names, has_text = [], [], False
+        ratios, sizes, names, has_text = [], [], [], False
         for i, page in enumerate(d, start=1):
-            r = page.rect
-            ratios.append(round(r.width / r.height, 4) if r.height else 1.0)
             if not has_text and page.get_text().strip():
-                has_text = True
+                has_text = True                      # 참고값만 남긴다
             png = pdir / f"p{i:03d}.png"
             if force or not png.exists():
-                page.get_pixmap(dpi=dpi).save(png)
+                pix = _render_page(page, dpi, s.ingest.max_long_edge_px)
+                pix.save(png)
+                w, h = pix.width, pix.height
+            else:
+                with Image.open(png) as im:
+                    w, h = im.size
+            sizes.append([int(w), int(h)])
+            ratios.append(round(w / h, 4) if h else 1.0)
             names.append(png.name)
 
+        creator, producer = str(md.get("creator") or ""), str(md.get("producer") or "")
         meta = DocMeta(
             doc_id=doc_id,
             pdf_path=str(pdf),
             sha256=_sha256(pdf),
             n_pages=len(ratios),
             page_ratios=ratios,
-            creator=str(md.get("creator") or ""),
-            producer=str(md.get("producer") or ""),
+            page_px=sizes,
+            render_dpi=int(dpi),
+            creator=creator,
+            producer=producer,
+            creator_hint=_format_from_creator(creator, producer) or "",
             has_text_layer=has_text,
             pages=names,
         )
@@ -110,33 +144,33 @@ def render_doc(s: Settings, pdf: Path, out_dir: Path, dpi: int | None = None, fo
 
 
 def rerender_page(s: Settings, meta_dir: Path, doc_id: str, page_no: int, dpi: int) -> Path:
-    """판독성이 낮은 페이지를 더 높은 dpi 로 다시 렌더링한다 (§8.2)."""
+    """판독성이 낮은 페이지를 더 높은 dpi 의 **이미지로** 다시 만든다 (§8.2)."""
     meta = json.loads((meta_dir / doc_id / "meta.json").read_text(encoding="utf-8"))
     out = meta_dir / doc_id / f"p{page_no:03d}@{dpi}.png"
+    cap = int(s.ingest.max_long_edge_px * dpi / max(1, s.ingest.dpi)) if s.ingest.max_long_edge_px else 0
     with pymupdf.open(meta["pdf_path"]) as d:
-        d[page_no - 1].get_pixmap(dpi=dpi).save(out)
+        _render_page(d[page_no - 1], dpi, cap).save(out)
     return out
 
 
 def decide_doc_format(s: Settings, meta: DocMeta, gc: GeminiClient | None, pages_dir: Path) -> DocMeta:
-    """1) creator/producer → 2) 페이지 비율 → 3) 애매하면 Gemini 로 첫 2페이지 판정."""
-    f = _format_from_creator(meta.creator, meta.producer)
-    if f:
-        meta.doc_format, meta.doc_format_source, meta.doc_format_confidence = f, "creator", 1.0
-        return meta
+    """이미지로만 판정한다: 1) 페이지 이미지 비율 → 2) 애매하면 첫 2페이지 이미지를 비전 모델로.
+
+    SETUP.md §8.1 의 1단계(creator/producer)는 쓰지 않는다 — 모든 PDF 를 이미지로 통일하기로 했다
+    (2026-10-14). creator/producer 로 본 값은 `creator_hint` 에 참고로만 남는다.
+    """
     f, conf = _format_from_ratio(meta.page_ratios, s.ingest.landscape_ratio)
     if f:
         meta.doc_format, meta.doc_format_source, meta.doc_format_confidence = f, "ratio", round(conf, 3)
         return meta
     meta.doc_format_source, meta.doc_format_confidence = "ratio", round(conf, 3)
-    meta.doc_format = "slides" if conf and meta.page_ratios and meta.page_ratios[0] >= s.ingest.landscape_ratio else "docs"
+    meta.doc_format = "slides" if meta.page_ratios and meta.page_ratios[0] >= s.ingest.landscape_ratio else "docs"
     if gc is None:
         return meta
     imgs = [pages_dir / meta.doc_id / n for n in meta.pages[:2]]
     prompt = load_prompt(
         s, "doc_format.v1",
-        data_block=wrap({"doc_id": meta.doc_id, "ratios": meta.page_ratios[:4],
-                         "creator": meta.creator, "producer": meta.producer}),
+        data_block=wrap({"doc_id": meta.doc_id, "ratios": meta.page_ratios[:4]}),
     )
     try:
         guess = gc.generate_json(
@@ -147,7 +181,7 @@ def decide_doc_format(s: Settings, meta: DocMeta, gc: GeminiClient | None, pages
     except DryRunHit:
         return meta
     meta.doc_format = guess.doc_format
-    meta.doc_format_source = "gemini"
+    meta.doc_format_source = "vision"
     meta.doc_format_confidence = guess.confidence
     return meta
 
@@ -197,12 +231,20 @@ def run(
     """그룹 1개를 ingest 한다. 반환값은 리포트용 요약."""
     pages_dir = s.work / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
-    pdfs = pdfs_of(s, g)
-    issues: list[dict] = []
+    if s.inputdata:
+        pdfs, issues = list_documents(s)
+    else:
+        pdfs, issues = pdfs_of(s, g), []
     metas: list[DocMeta] = []
 
     for pdf in pdfs:
-        meta = render_doc(s, pdf, pages_dir, force=force)
+        try:
+            meta = render_doc(s, pdf, pages_dir, force=force)
+        except (RuntimeError, ValueError, OSError) as e:   # 손상·암호화 PDF 가 전체를 멈추지 않게 한다
+            issues.append({"doc_id": tu.doc_id(pdf.name),
+                           "issue": f"PDF 를 이미지로 바꾸지 못함 ({type(e).__name__}: {str(e)[:80]})",
+                           "path": str(pdf)})
+            continue
         if meta.n_pages == 0:
             issues.append({"doc_id": meta.doc_id, "issue": "페이지 0개(손상 가능)", "path": str(pdf)})
             continue
@@ -212,12 +254,14 @@ def run(
         )
         metas.append(meta)
 
-    # 평가 시트와 PDF 교차 확인 (§7.1)
+    # 평가 시트와 PDF 교차 확인 (§7.1). 대소문자·공백만 다른 이름은 연결하고 이슈로 남긴다.
     pdf_ids = {m.doc_id for m in metas}
     if label_doc_ids is not None:
-        for d in sorted(label_doc_ids - pdf_ids):
+        mapping, notes = tu.match_doc_ids(set(label_doc_ids), pdf_ids)
+        issues.extend(notes)
+        for d in sorted(set(label_doc_ids) - set(mapping)):
             issues.append({"doc_id": d, "issue": "평가 시트에는 있으나 PDF 없음", "path": ""})
-        for d in sorted(pdf_ids - label_doc_ids):
+        for d in sorted(pdf_ids - set(mapping.values())):
             issues.append({"doc_id": d, "issue": "PDF는 있으나 평가 시트에 없음", "path": ""})
 
     _write_issues(s, g, issues)
@@ -226,6 +270,10 @@ def run(
     group_format = max(set(fmt_votes), key=fmt_votes.count) if fmt_votes else "docs"
     summary = {
         "group": g.key,
+        "input_layout": "inputdata" if s.inputdata else "legacy",
+        "input_dir": str(s.documents_dir if s.inputdata else s.p("raw_pdfs")),
+        "image_based": True,
+        "render": {"dpi": s.ingest.dpi, "max_long_edge_px": s.ingest.max_long_edge_px},
         "n_pdfs": len(pdfs),
         "n_docs": len(metas),
         "n_pages": sum(m.n_pages for m in metas),

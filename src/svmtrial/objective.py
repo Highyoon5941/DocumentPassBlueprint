@@ -150,7 +150,7 @@ def shortfall(obj: Objective, x: pd.Series, candidates: list[str], target: float
     missing = [c for c in candidates if c in obj.w and float(cur.get(c, 0.0)) == 0.0]
     now = o.score(())
     if now >= target:
-        return {"already_meets": True, "score": round(now, 6), "changes": []}
+        return {"already_meets": True, "score": round(float(now), 6), "changes": []}
     res = optimize(o, missing, max_k=min(max_k, len(missing)))
     pick = next((r for r in res["budget_curve"] if r["k"] > 0 and r["score"] >= target), None)
     chosen = pick or (res["budget_curve"][-1] if res["budget_curve"] else {"elements": [], "score": now})
@@ -158,7 +158,7 @@ def shortfall(obj: Objective, x: pd.Series, candidates: list[str], target: float
         "already_meets": False,
         "score_before": round(now, 6),
         "score_after": round(chosen["score"], 6),
-        "reached_target": chosen["score"] >= target,
+        "reached_target": bool(chosen["score"] >= target),
         "changes": chosen["elements"],
         "n_changes": len(chosen["elements"]),
         "budget_curve": res["budget_curve"],

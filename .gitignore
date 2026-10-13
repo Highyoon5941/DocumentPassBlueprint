@@ -2,6 +2,9 @@
 *.json.key
 *-sa.json
 data/
+# 확정 입력 폴더(고객 문서·평가 시트). 안내문만 추적한다 (R3)
+InputData/*
+!InputData/README.md
 work/
 outputs/
 dist/

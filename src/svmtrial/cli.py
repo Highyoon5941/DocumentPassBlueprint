@@ -21,7 +21,7 @@ from rich.table import Table
 
 from svmtrial.config import Settings, check_interpreter_hygiene, load_settings
 from svmtrial.gemini_client import GeminiClient, new_run_id
-from svmtrial.groups import Group, discover_groups, parse_group
+from svmtrial.groups import Group, discover_groups, input_hint, parse_group
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="문서 Pass 조건 역추적 → 표준 템플릿 생성 (SVM + Gemini 하이브리드)")
@@ -29,7 +29,8 @@ concepts_app = typer.Typer(no_args_is_help=True, help="S4b/S4c — 개념 가설
 app.add_typer(concepts_app, name="concepts")
 con = Console()
 
-GroupOpt = Annotated[str | None, typer.Option("--group", "-g", help="분석 그룹 (예: 대책서__CUST_A). 생략하면 전부")]
+GroupOpt = Annotated[str | None, typer.Option("--group", "-g",
+                                              help="분석 그룹. InputData 입력이면 그룹이 하나라 생략한다")]
 DryOpt = Annotated[bool, typer.Option("--dry-run", help="Gemini 호출 없이 호출 수·예상 토큰만 출력")]
 ForceOpt = Annotated[bool, typer.Option("--force", help="캐시·중간 산출물을 무시하고 다시 만든다")]
 ConfigOpt = Annotated[Path | None, typer.Option("--config", help="config.yaml 경로")]
@@ -52,7 +53,7 @@ def _groups(s: Settings, group: str | None) -> list[Group]:
         return [parse_group(group)]
     gs = discover_groups(s)
     if not gs:
-        con.print(f"[red]✗ 그룹을 찾지 못했습니다. {s.p('raw_pdfs')}/<doc_type>/<customer>/*.pdf 구조를 확인하세요.[/red]")
+        con.print(f"[red]✗ 입력 문서를 찾지 못했습니다. {input_hint(s)} 구조를 확인하세요.[/red]")
         raise typer.Exit(1)
     return gs
 
@@ -131,10 +132,26 @@ def doctor(config: ConfigOpt = None) -> None:
         "GOOGLE_CLOUD_LOCATION": s.location,
         "GEMINI_MODEL_FAST": s.gemini.model_fast or "(없음)",
         "GEMINI_MODEL_PRO": s.gemini.model_pro or "(없음)",
-        "PDF 경로": f"{s.p('raw_pdfs')} ({'있음' if s.p('raw_pdfs').exists() else '없음'})",
-        "평가 시트 경로": f"{s.p('labels')} ({'있음' if s.p('labels').exists() else '없음'})",
+        "입력 레이아웃": s.input.layout,
         "타깃": s.analysis.target,
+        "평가자 사유 사용": str(s.analysis.use_causes),
     }
+    if s.inputdata:
+        from svmtrial.groups import list_documents
+
+        pdfs, issues = list_documents(s)
+        rows["문서 폴더"] = f"{s.documents_dir} ({'PDF ' + str(len(pdfs)) + '개' if pdfs else '없음'})"
+        if issues:
+            rows["문서 폴더 이슈"] = f"{len(issues)}건 (PDF 아님·이름 중복) — ingest 가 work/ingest_issues.csv 에 기록"
+        try:
+            from svmtrial.labels import judgement_file
+
+            rows["평가 시트"] = f"{judgement_file(s)} (있음)"
+        except Exception:  # noqa: BLE001 - 점검 명령은 없다는 사실만 알린다
+            rows["평가 시트"] = f"{s.judgement_path} (없음)"
+    else:
+        rows["PDF 경로"] = f"{s.p('raw_pdfs')} ({'있음' if s.p('raw_pdfs').exists() else '없음'})"
+        rows["평가 시트 경로"] = f"{s.p('labels')} ({'있음' if s.p('labels').exists() else '없음'})"
     if s.backend == "claude":
         import os as _os
 
@@ -165,7 +182,7 @@ def doctor(config: ConfigOpt = None) -> None:
 
 @app.command()
 def ingest(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = False, config: ConfigOpt = None) -> None:
-    """S1 — PDF → 페이지 PNG + 메타, 원본 형식(docs/slides) 판정."""
+    """S1 — 모든 PDF 를 페이지 이미지로 바꾸고(이미지 기반 통일) 원본 형식(docs/slides) 판정."""
     s = _settings(config)
     run_id = new_run_id()
     gc = _client(s, run_id, dry_run, force)
@@ -204,7 +221,12 @@ def labels(group: GroupOpt = None, config: ConfigOpt = None) -> None:
         except mod.LabelError as e:
             con.print(f"[red]✗ {g.key}: {e}[/red]")
             raise typer.Exit(1) from e
-        _show(f"labels — {g.key}", {k: v for k, v in out.items() if k != "warnings"})
+        _show(f"labels — {g.key}", {k: v for k, v in out.items()
+                                     if k not in ("warnings", "ignored_columns", "top_causes")})
+        if out.get("top_causes"):
+            con.print("평가자 Fail 사유 상위: " + " / ".join(out["top_causes"]))
+        for c in out.get("ignored_columns", []):
+            con.print(f"[dim]  제외한 열 — {c}[/dim]")
         for w in out["warnings"]:
             con.print(f"[yellow]⚠ {w}[/yellow]")
 
@@ -239,17 +261,23 @@ def concepts_discover(group: GroupOpt = None, dry_run: DryOpt = False, force: Fo
         out = mod.discover(s, g, gc, lmod.load_targets(s, g), tcol, force=force)
         if not out:
             continue
+        cc = out.get("cause_criteria", {})
         _show(f"concepts discover — {g.key}", {
             "발견셋 문서": out["n_discovery_docs"],
             "발견셋 Pass/Fail": f"{out['n_pass_in_discovery']}/{out['n_fail_in_discovery']}",
+            "평가자 사유 → 기준": (f"사유 {cc.get('n_distinct_discovery', 0)}종 → 기준 "
+                              f"{sum(1 for c in out['concepts'] if c.get('source') == 'cause')}개"
+                              if cc.get("used") else "사용 안 함"),
             "라운드별 가설 수": [r["n_concepts"] for r in out["rounds"]],
+            "사유 기준과 겹쳐 뺀 가설": len(out.get("dropped_as_duplicate_of_cause", [])),
             "합친 개념 수": len(out["concepts"]),
         })
         t = Table(title="개념 후보 (🔒 사람 검토 필요)", title_justify="left")
-        for c in ("ID", "type", "섹션", "질문"):
+        for c in ("ID", "출처", "type", "섹션", "질문"):
             t.add_column(c, overflow="fold")
         for c in out["concepts"]:
-            t.add_row(c["id"], c["type"], str(c.get("section_id") or "—"), c["question"])
+            t.add_row(c["id"], "사유" if c.get("source") == "cause" else "가설", c["type"],
+                      str(c.get("section_id") or "—"), c["question"])
         con.print(t)
         con.print(f"[yellow]🔒 {mod.work_dir(s, 'concepts', g) / mod.CANDIDATES} 를 검토한 뒤"
                   f" `svmtrial approve --group {g.key} --gate concepts` 또는 직접 "
@@ -272,7 +300,13 @@ def concepts_score(group: GroupOpt = None, dry_run: DryOpt = False, force: Force
         except GateNotPassed as e:
             con.print(f"[yellow]{e}[/yellow]")
             raise typer.Exit(2) from e
-        _show(f"concepts score — {g.key}", {k: v for k, v in out.items() if k not in ("yes_rate", "scoring_stability")})
+        _show(f"concepts score — {g.key}", {k: v for k, v in out.items()
+                                             if k not in ("yes_rate", "scoring_stability", "cause_consistency")})
+        cc = out.get("cause_consistency") or {}
+        if cc.get("overall") is not None:
+            con.print(f"사유-채점 일치율: {cc['overall']:.0%} (문서×사유 {cc['n_doc_cause_pairs']}쌍)")
+        if cc.get("low_agreement"):
+            con.print(f"[yellow]⚠ 사유와 채점이 어긋나는 기준(질문 문구 확인): {cc['low_agreement']}[/yellow]")
         if out.get("unstable_concepts"):
             con.print(f"[yellow]⚠ 채점 불안정 개념(모델에서 제외): {out['unstable_concepts']}[/yellow]")
     _dry_note(gc)
@@ -433,10 +467,15 @@ def _build_outputs(s: Settings, gc: GeminiClient, run_id: str, groups: list[Grou
             ing = json.loads((s.work / "ingest" / f"{g.safe}.json").read_text(encoding="utf-8"))
             ocr_sum_f = s.work / "ocr" / f"_summary_{g.safe}.json"
             ocr_sum = json.loads(ocr_sum_f.read_text(encoding="utf-8")) if ocr_sum_f.exists() else {}
-            labels_map = {c.id: c.question for c in concepts}
+            labels_map = {c.id: ("[사유] " if c.source == "cause" else "") + c.question for c in concepts}
             labels_map.update({f: f for f in res["features"] if f not in labels_map})
+            import yaml
+
+            appr_f = s.work / "concepts" / g.safe / cmod.APPROVED
+            cand = yaml.safe_load(appr_f.read_text(encoding="utf-8")) if appr_f.exists() else {}
             rmod.render(s, g, out_dir, run_id, spec, res, agree, ing, ocr_sum,
-                        cmod.load_scoring_meta(s, g), cf, labels_map)
+                        cmod.load_scoring_meta(s, g), cf, labels_map, concepts=concepts,
+                        cause_summary=lmod.load_cause_summary(s, g), candidates=cand or {})
             made["analysis_report.md"] = "✓"
 
         n_missing = sum(1 for sec in spec.sections for el in sec.elements if not el.evidence_ids)
@@ -455,7 +494,7 @@ def _build_outputs(s: Settings, gc: GeminiClient, run_id: str, groups: list[Grou
 @app.command()
 def diagnose(
     pdf: Annotated[Path, typer.Option("--pdf", help="진단할 새 문서 PDF")],
-    group: Annotated[str, typer.Option("--group", "-g", help="기준 그룹 (예: 대책서__CUST_A)")],
+    group: GroupOpt = None,
     force: ForceOpt = False, config: ConfigOpt = None,
 ) -> None:
     """S7 — 새 문서 1건이 Pass 쪽으로 가려면 무엇을 보완해야 하는지 진단."""
@@ -464,7 +503,11 @@ def diagnose(
     gc = _client(s, run_id, False, force)
     from svmtrial import diagnose as mod
 
-    g = parse_group(group)
+    gs = _groups(s, group)
+    if len(gs) > 1:
+        con.print(f"[red]✗ 그룹이 여러 개입니다. --group 으로 하나를 고르세요: {[x.key for x in gs]}[/red]")
+        raise typer.Exit(1)
+    g = gs[0]
     out_dir = s.outputs / run_id / g.safe
     out = mod.run(s, g, gc, pdf, out_dir, force=force)
     for r in out.get("unreliable_reasons", []):
@@ -483,8 +526,8 @@ def diagnose(
 
 @app.command()
 def approve(
-    group: Annotated[str, typer.Option("--group", "-g")],
     gate: Annotated[str, typer.Option("--gate", help="sections | concepts")],
+    group: GroupOpt = None,
     config: ConfigOpt = None,
 ) -> None:
     """🔒 후보 파일을 승인 파일로 복사한다. **사람이 검토한 뒤 직접 실행하는 명령이다.**
@@ -492,7 +535,11 @@ def approve(
     `all` 파이프라인은 이 명령을 자동으로 호출하지 않는다 (SETUP.md R7).
     """
     s = _settings(config)
-    g = parse_group(group)
+    gs = _groups(s, group)
+    if len(gs) > 1:
+        con.print(f"[red]✗ 그룹이 여러 개입니다. --group 으로 하나를 고르세요: {[x.key for x in gs]}[/red]")
+        raise typer.Exit(1)
+    g = gs[0]
     pairs = {
         "sections": ("sections", "taxonomy_candidates.yaml", "taxonomy_approved.yaml"),
         "concepts": ("concepts", "concepts_candidates.yaml", "concepts_approved.yaml"),
@@ -532,7 +579,8 @@ def run_all(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = F
     for g in _groups(s, group):
         con.rule(f"[bold]{g.key}")
         ing = imod.run(s, g, gc, force=force, label_doc_ids=_label_ids(s, g))
-        con.print(f"S1 ingest: 문서 {ing['n_docs']}건 / 페이지 {ing['n_pages']}장 / 형식 {ing['group_doc_format']}")
+        con.print(f"S1 ingest: 문서 {ing['n_docs']}건 / 페이지 이미지 {ing['n_pages']}장 / 형식 {ing['group_doc_format']}"
+                  + (f" / 입력 이슈 {ing['n_issues']}건" if ing.get("n_issues") else ""))
         ids = ing["doc_ids"]
 
         oc = omod.run(s, g, gc, force=force)
@@ -542,7 +590,8 @@ def run_all(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = F
         con.print(f"S2 ocr: 페이지 {oc['n_pages']}장 / 평균 판독성 {oc['mean_legibility']}")
 
         lb = lmod.run(s, g, doc_ids=set(ids))
-        con.print(f"S3 labels: α={lb['krippendorff_alpha']} / 타깃 {lb['target']['used']} ({lb['target']['column']})")
+        con.print(f"S3 labels: α={lb['krippendorff_alpha']} / 타깃 {lb['target']['used']} ({lb['target']['column']})"
+                  f" / {lb.get('fail_causes', '')}")
         for w in lb["warnings"]:
             con.print(f"[yellow]⚠ {w}[/yellow]")
         tcol = lb["target"]["column"]
@@ -555,7 +604,9 @@ def run_all(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = F
         con.print(f"S4a sections: 분류체계 {len(sec['taxonomy'])}개 / OTHER 제목 {sec['n_titles_other']}개")
 
         cand = cmod.discover(s, g, gc, lmod.load_targets(s, g), tcol, force=force)
-        con.print(f"S4b concepts discover: 개념 후보 {len(cand.get('concepts', []))}개")
+        n_cause = sum(1 for c in cand.get("concepts", []) if c.get("source") == "cause")
+        con.print(f"S4b concepts discover: 개념 후보 {len(cand.get('concepts', []))}개 "
+                  f"(평가자 사유 기준 {n_cause} + 가설 {len(cand.get('concepts', [])) - n_cause})")
         try:
             cmod.load_approved_concepts(s, g)
         except smod.GateNotPassed as e:

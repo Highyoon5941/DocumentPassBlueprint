@@ -1,7 +1,7 @@
 """analysis_report.md 와 차트 (SETUP.md §8.7).
 
 섹션 순서:
-1. 요약  2. 데이터 품질  3. 평가자 일치도와 엄격도  4. Pass를 가르는 요인
+1. 요약  2. 데이터 품질  3. 평가자 일치도와 엄격도 (+ 3.x 평가자 Fail 사유)  4. Pass를 가르는 요인
 5. 모델 성능과 순열검정  6. 평가자별 차이와 충돌  7. 자주 필요한 보완 항목  8. 한계와 주의사항
 """
 
@@ -127,7 +127,8 @@ def _fmt(v, pct: bool = False, nd: int = 3) -> str:
 def render(
     s: Settings, g: Group, out_dir: Path, run_id: str, spec: TemplateSpec, results: dict,
     agreement: dict, ingest: dict, ocr_summary: dict, scoring: dict, counterfactual: dict | None,
-    concept_labels: dict[str, str],
+    concept_labels: dict[str, str], concepts: list | None = None, cause_summary: dict | None = None,
+    candidates: dict | None = None,
 ) -> Path:
     font = _font_setup()
     charts = out_dir / "charts"
@@ -179,15 +180,27 @@ def render(
     A("")
     A("| 항목 | 값 |")
     A("|---|---|")
+    notes = agreement.get("input_notes") or {}
+    if ingest.get("input_layout"):
+        A(f"| 입력 | `{md(ingest.get('input_dir', ''))}`"
+          + (f" + `{md(notes.get('judgement_file', ''))}`" if notes.get("judgement_file") else "") + " |")
     A(f"| PDF 수 / 처리된 문서 수 | {ingest.get('n_pdfs', '—')} / {ingest.get('n_docs', '—')} |")
-    A(f"| 총 페이지 수 | {ingest.get('n_pages', '—')} |")
-    A(f"| 원본 형식 판정 근거 | {ingest.get('format_sources', {})} |")
-    A(f"| 텍스트 레이어 있는 문서 | {ingest.get('n_with_text_layer', '—')}건 (스캔본 전제이므로 무시) |")
+    A(f"| 총 페이지 수 | {ingest.get('n_pages', '—')} (모든 페이지를 이미지로 변환해 이미지로만 처리) |")
+    A(f"| 원본 형식 판정 근거 | {ingest.get('format_sources', {})} (페이지 이미지 비율 → 애매하면 비전 판정) |")
+    A(f"| 텍스트 레이어 있는 문서 | {ingest.get('n_with_text_layer', '—')}건 (이미지 기반으로 통일하므로 쓰지 않음) |")
     A(f"| 평균 판독성 | {_fmt(ocr_summary.get('mean_legibility'))} |")
     A(f"| 판독 불량 페이지 | {ocr_summary.get('n_low_legibility_pages', '—')}개 |")
     A(f"| 판독 불량 문서 | {', '.join(ocr_summary.get('docs_low_legibility', [])) or '없음'} |")
     A(f"| 매칭 실패(시트↔PDF) | {ingest.get('n_issues', 0)}건"
       + (" — `work/ingest_issues.csv`" if ingest.get("n_issues") else "") + " |")
+    if notes.get("raters"):
+        A(f"| 평가자 열 | {', '.join(md(r) for r in notes['raters'])} |")
+    for ig in notes.get("ignored_columns", []):
+        A(f"| 평가 시트에서 제외한 열 | {md(ig.get('column'))} — {md(ig.get('reason'))} |")
+    if notes.get("skipped_rows"):
+        A(f"| 건너뛴 행 (FileName 비었거나 `..`) | {notes['skipped_rows']}행 |")
+    if notes.get("duplicate_file_names"):
+        A(f"| 중복 FileName (첫 행만 사용) | {', '.join(md(x) for x in notes['duplicate_file_names'])} |")
     A(f"| 개념 채점 na 비율 | {_fmt(scoring.get('na_rate'), pct=True)} |")
     A(f"| 채점 불안정 개념 (일치율 < {s.analysis.scoring_min_agreement:.0%}) | "
       f"{', '.join(scoring.get('unstable_concepts', [])) or '없음'} |")
@@ -224,6 +237,8 @@ def render(
         for a in rs:
             A(f"| **{a}** | " + " | ".join(_fmt(pw[a].get(b)) for b in rs) + " |")
     A("")
+
+    _cause_section(A, cause_summary or {}, concepts or [], scoring, candidates or {})
 
     # 4. Pass를 가르는 요인
     A("## 4. Pass를 가르는 요인")
@@ -349,6 +364,53 @@ def render(
     f = out_dir / "analysis_report.md"
     f.write_text("\n".join(L), encoding="utf-8")
     return f
+
+
+def _cause_section(A, cs: dict, concepts: list, scoring: dict, candidates: dict) -> None:
+    """3.x 평가자 Fail 사유 — 사유 통계(LLM 무관)와, 사유에서 만든 기준(개념)의 채점 일치도."""
+    A("### 평가자 Fail 사유")
+    A("")
+    if not cs or not cs.get("n_fail_ratings"):
+        A("- 평가 시트에 Fail 사유가 없다.")
+        A("")
+        return
+    n_f, n_c = cs["n_fail_ratings"], cs.get("n_fail_with_cause", 0)
+    A(f"- Fail 판정 {n_f}건 중 사유 기재 **{n_c}건 ({n_c / max(1, n_f):.0%})**, 서로 다른 사유 "
+      f"**{cs.get('n_distinct_causes', 0)}종** (띄어쓰기·기호 차이는 같은 사유로 묶음)")
+    A("")
+    ref2k: dict[str, str] = {}
+    for c in concepts:
+        if getattr(c, "source", "") == "cause":
+            for r in getattr(c, "cause_refs", []) or []:
+                ref2k[r] = c.id
+    cons = (scoring.get("cause_consistency") or {}).get("per_concept", {})
+    A("| 사유 | 건수 | 문서 수 | 평가자별 | 기준(개념) | 채점 일치율 |")
+    A("|---|---|---|---|---|---|")
+    for it in cs.get("causes", [])[:20]:
+        kid = next((ref2k[v] for v in it.get("variants", []) if v in ref2k), None)
+        agr = cons.get(kid, {}).get("agreement") if kid else None
+        A(f"| {md(it['cause'])} | {it['n_ratings']} | {it['n_docs']} | "
+          f"{', '.join(f'{md(r)} {n}' for r, n in it.get('raters', {}).items())} | "
+          f"{f'`{kid}`' if kid else '—'} | {_fmt(agr, pct=True) if agr is not None else '—'} |")
+    A("")
+    A("> 채점 일치율 = 평가자가 그 사유로 Fail 을 준 문서에서 비전 채점도 '기준 미충족' 이라고 한 비율. "
+      "낮으면 기준 질문 문구나 채점을 확인한다. `—` 는 기준으로 쓰지 않은 사유(검증셋에만 나왔거나 🔒 에서 빠짐).")
+    A("")
+    br = cs.get("by_rater", {})
+    if br:
+        A("| 평가자 | Fail 수 | 사유 기재율 | 자주 쓴 사유 |")
+        A("|---|---|---|---|")
+        for r, v in br.items():
+            A(f"| {md(r)} | {v['n_fail']} | {v['n_fail_with_cause'] / max(1, v['n_fail']):.0%} | "
+              f"{md(', '.join(v.get('top_causes', [])[:3])) or '—'} |")
+        A("")
+    cc = candidates.get("cause_criteria") or {}
+    if cc.get("validation_only"):
+        A(f"- 검증셋 문서에만 나온 사유(누수 방지로 기준 생성에 쓰지 않음): {md(', '.join(cc['validation_only']))}")
+    if cc.get("unmapped"):
+        A(f"- 기준으로 바꾸지 못한 사유: {md(', '.join(cc['unmapped']))}")
+    if cc.get("validation_only") or cc.get("unmapped"):
+        A("")
 
 
 def spec_markdown(spec: TemplateSpec, out: Path) -> Path:

@@ -58,6 +58,46 @@ def strip_numbering(s: str) -> str:
     return _NUMBERING.sub("", nfkc(s).strip()).strip()
 
 
+# ---------------------------------------------------------------- 문서 식별자
+
+_PDF_EXT = re.compile(r"\.pdf$", re.IGNORECASE)
+
+
+def doc_id(name: object) -> str:
+    """파일명 → doc_id. PDF 파일명과 평가 시트의 FileName 에 **같은 규칙**을 적용한다.
+
+    NFC(맥에서 만든 NFD 한글 파일명 대응) → 앞뒤 공백 제거 → 경로 제거 → `.pdf` 제거.
+    NFKC 는 쓰지 않는다. `㈜` 같은 글자가 `(주)` 로 바뀌어 폴더 이름이 원본과 달라진다.
+    """
+    s = unicodedata.normalize("NFC", str(name)).strip()
+    s = s.replace("\\", "/").rsplit("/", 1)[-1]
+    return _PDF_EXT.sub("", s).strip()
+
+
+def _loose_id(s: str) -> str:
+    return _WS.sub("", nfkc(s)).casefold()
+
+
+def match_doc_ids(sheet_ids: set[str], pdf_ids: set[str]) -> tuple[dict[str, str], list[dict]]:
+    """시트 ID → PDF ID 대응. 정확히 같으면 그대로, 아니면 대소문자·공백·전각 차이만 허용한다.
+
+    느슨한 비교로 **하나에만** 맞을 때만 잇는다. 둘 이상에 맞으면 잇지 않는다(오매칭 방지).
+    반환: (대응표, 느슨하게 이은 내역 — ingest_issues 에 남긴다)
+    """
+    out = {d: d for d in sheet_ids if d in pdf_ids}
+    loose: dict[str, list[str]] = {}
+    for p in pdf_ids - set(out.values()):
+        loose.setdefault(_loose_id(p), []).append(p)
+    notes: list[dict] = []
+    for d in sorted(sheet_ids - set(out)):
+        cands = loose.get(_loose_id(d), [])
+        if len(cands) == 1:
+            out[d] = cands.pop()            # 같은 PDF 에 시트 행 두 개가 붙지 않게 꺼낸다
+            notes.append({"doc_id": out[d], "issue": f"시트 FileName '{d}' 와 대소문자·공백만 달라 같은 문서로 연결함",
+                          "path": ""})
+    return out, notes
+
+
 QUOTED = re.compile(r"[\"'“”‘’「『]([^\"'“”‘’」』]{3,})[\"'“”‘’」』]")
 
 

@@ -164,7 +164,8 @@ def test_prompt_v2_variants_are_domain_neutral(settings):
     자율 모드의 전제(사람 의견 배제)를 지키려면 v2 에는 그런 용어가 없어야 한다.
     """
     banned = ["5why", "5-why", "수평전개", "근본원인", "8d", "효과검증", "5w2h"]
-    for stem in ("concept_discovery.v2", "concept_scoring.v2", "section_taxonomy.v2"):
+    # cause_criteria.v1 은 자율 모드에서도 그대로 쓰므로 같은 기준을 지켜야 한다
+    for stem in ("concept_discovery.v2", "concept_scoring.v2", "section_taxonomy.v2", "cause_criteria.v1"):
         text = load_prompt(settings, stem, data_block="{}", max_hypotheses=15,
                            id_prefix="C", min_keep=30, max_keep=60).lower()
         hits = [b for b in banned if b in text]

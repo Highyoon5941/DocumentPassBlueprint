@@ -37,14 +37,15 @@ Valeo_SVMtrial — Windows 실행 안내
 
 실행
 ----
-9.  데이터를 넣습니다.
-      data\raw\pdfs\<문서종류>\<고객사>\<doc_id>.pdf
-      data\raw\labels\*.xlsx
-    ※ PDF 파일명(확장자 제외)이 평가 시트의 doc_id 와 같아야 합니다.
-10. run_windows.bat all --group 대책서__CUST_A
+9.  데이터를 넣습니다 (자세한 형식: InputData\README.md).
+      InputData\Documents\*.pdf
+      InputData\Judgement.xlsx      FileName | Person1 | Person2 | …   값: p / f / f(사유)
+    ※ PDF 파일명(확장자 제외)이 Judgement 의 FileName 과 같아야 합니다.
+    ※ 모든 PDF 는 페이지마다 이미지로 바꿔 처리합니다 (스캔본·디지털 PDF 구분 없음).
+10. run_windows.bat all
     ※ 사람 검토 관문(🔒)에서 멈춥니다. 안내 메시지대로 후보 파일을 검토한 뒤
-      run_windows.bat approve --group 대책서__CUST_A --gate sections
-      run_windows.bat approve --group 대책서__CUST_A --gate concepts
+      run_windows.bat approve --gate sections
+      run_windows.bat approve --gate concepts
       를 실행하고 10번을 다시 실행하세요.
 11. 결과: outputs\<run_id>\<그룹>\ 안에
       template_spec.json / template_spec.md / template.docx(또는 .pptx) / analysis_report.md

@@ -1,28 +1,41 @@
-"""S3 labels — 평가자 일치도와 타깃 (SETUP.md §8.3).
+"""S3 labels — 평가자 일치도와 타깃 (SETUP.md §8.3) + 평가자 Fail 사유.
 
-산출물: work/labels/labels_long.{parquet|csv}, doc_targets.csv, agreement.json
+입력 (config.input.layout):
+- inputdata (기본): `InputData/Judgement.xlsx` — FileName | Person1 | Person2 | … (wide)
+    값: `p` / `f` / `f(사유)`. 사유는 여러 개면 쉼표·세미콜론·줄바꿈으로 나눈다.
+    평가자 열은 **값으로 판별**한다. 판정값이 아닌 메모 칸(예: "examples of cause")과
+    값이 하나도 없는 열(예: 비어 있는 Person3, "..")은 제외하고 기록만 남긴다.
+- legacy: `data/raw/labels/*.xlsx|csv` — long/wide 자동 판별 (SETUP.md §7.2)
+
+두 레이아웃 모두 `Fail(사유)` 형식을 읽는다.
+산출물: work/labels/<group>/labels_long.{parquet|csv}, doc_targets.csv, agreement.json,
+        causes_long.csv, cause_summary.json
 """
 
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from svmtrial import textutil as tu
 from svmtrial.config import Settings
 from svmtrial.groups import Group
 from svmtrial.io_utils import load_table, save_table
 
 CANON = ["doc_id", "customer", "doc_type", "rater", "result"]
+CAUSE_JOIN = "; "
 
 
 class LabelError(RuntimeError):
     pass
 
 
-# ---------------------------------------------------------------- 읽기/정규화
+# ---------------------------------------------------------------- 값 해석
 
 
 def _norm_value(v: object) -> str:
@@ -45,15 +58,68 @@ def _is_blank(v: object) -> bool:
     return v is None or (isinstance(v, float) and np.isnan(v)) or _norm_value(v) in {"", "nan", "none", "-", "n/a", "na"}
 
 
+# `f(사유)` — NFKC 가 전각 괄호를 반각으로 바꾸므로 반각만 보면 된다. 대괄호도 허용, 닫는 괄호 누락도 허용.
+_JUDGE = re.compile(r"^(?P<base>[^()\[\]]+?)\s*[(\[](?P<inner>.*?)[)\]]?\s*$", re.S)
+# 사유 구분자. `/` 는 넣지 않는다 — "전/후" 같은 사유 안의 표기를 쪼갠다.
+_CAUSE_SPLIT = re.compile(r"\s*(?:[,;|、\n]|\s\d+[.)]\s)\s*")
+_LEAD_NUM = re.compile(r"^\s*\d+\s*[.)]\s*")
+_PLACEHOLDER = re.compile(r"^[.…·\s]*$")          # '..', '...', '…'
+_CAUSE_KEY = re.compile(r"[\W_]+", re.UNICODE)
+
+
+@dataclass
+class Judged:
+    """셀 하나의 해석 결과. y: 1.0/0.0, 빈칸이면 nan, 인식 실패면 None."""
+
+    y: float | None
+    causes: list[str] = field(default_factory=list)
+    remark: str = ""                         # 괄호 안 원문 (Pass 의 코멘트 포함)
+
+
+def split_causes(text: str) -> list[str]:
+    """괄호 안 사유 → 목록. 번호(1. 2.)와 앞뒤 기호를 떼고 중복을 없앤다."""
+    out: list[str] = []
+    for part in _CAUSE_SPLIT.split(text or ""):
+        c = _LEAD_NUM.sub("", part).strip(" \t\"'“”‘’-–·:")
+        c = re.sub(r"\s+", " ", c)
+        if c and not _PLACEHOLDER.match(c) and c not in out:
+            out.append(c)
+    return out
+
+
+def cause_key(cause: str) -> str:
+    """같은 사유를 띄어쓰기·기호 차이 없이 묶는 키 ("향후계획 미기입" == "향후 계획 미기입")."""
+    return _CAUSE_KEY.sub("", tu.nfkc(cause)).casefold()
+
+
+def parse_judgement(v: object, vm: dict[str, int]) -> Judged:
+    """`p` / `f` / `f(사유)` / `Pass` / `불합격(사유)` … → Judged."""
+    if _is_blank(v):
+        return Judged(np.nan)
+    s = _norm_value(v)
+    base, inner = s, ""
+    m = _JUDGE.match(s)
+    if m:
+        base, inner = m.group("base").strip(), m.group("inner").strip()
+    key = base.lower()
+    if key not in vm:
+        return Judged(None, remark=inner)
+    y = float(vm[key])
+    return Judged(y, split_causes(inner) if y == 0.0 else [], inner)
+
+
+# ---------------------------------------------------------------- legacy 시트
+
+
 def read_label_files(s: Settings) -> list[Path]:
     d = s.p("labels")
     return sorted([*d.glob("*.xlsx"), *d.glob("*.xls"), *d.glob("*.csv")]) if d.exists() else []
 
 
-def _read_one(f: Path) -> pd.DataFrame:
+def _read_one(f: Path, sheet: str | int = 0) -> pd.DataFrame:
     if f.suffix.lower() == ".csv":
         return pd.read_csv(f, dtype=object)
-    return pd.read_excel(f, dtype=object)
+    return pd.read_excel(f, dtype=object, sheet_name=sheet)
 
 
 def to_long(df: pd.DataFrame, s: Settings, source: str) -> pd.DataFrame:
@@ -74,7 +140,7 @@ def to_long(df: pd.DataFrame, s: Settings, source: str) -> pd.DataFrame:
 
     if c_rater is not None and c_res is not None:          # long 형식
         out = pd.DataFrame({
-            "doc_id": df[c_doc].map(_norm_value),
+            "doc_id": df[c_doc].map(tu.doc_id),
             "rater": df[c_rater].map(_norm_value),
             "result": df[c_res],
         })
@@ -86,7 +152,7 @@ def to_long(df: pd.DataFrame, s: Settings, source: str) -> pd.DataFrame:
         out = df.melt(id_vars=[c_doc, *meta_cols], value_vars=rater_cols,
                       var_name="rater", value_name="result")
         out = out.rename(columns={c_doc: "doc_id"})
-        out["doc_id"] = out["doc_id"].map(_norm_value)
+        out["doc_id"] = out["doc_id"].map(tu.doc_id)
         out["rater"] = out["rater"].map(_norm_value)
 
     for name in ("customer", "doc_type"):
@@ -100,48 +166,158 @@ def to_long(df: pd.DataFrame, s: Settings, source: str) -> pd.DataFrame:
         for name in ("customer", "doc_type"):
             c = col(name)
             if c is not None:
-                mapping = dict(zip(src[c_doc].map(_norm_value), src[c].map(_norm_value), strict=False))
+                mapping = dict(zip(src[c_doc].map(tu.doc_id), src[c].map(_norm_value), strict=False))
                 out[name] = out["doc_id"].map(mapping)
     out["source_file"] = source
     return out
 
 
+# ---------------------------------------------------------------- Judgement (inputdata)
+
+
+def judgement_file(s: Settings) -> Path:
+    """설정된 Judgement 파일. 없으면 같은 폴더의 `Judgement.*`(xlsx/xls/csv)를 찾는다."""
+    f = s.judgement_path
+    if f.exists():
+        return f
+    stem = Path(s.input.judgement).stem.casefold()
+    if s.input_root.exists():
+        for c in sorted(s.input_root.iterdir()):
+            if c.is_file() and c.stem.casefold() == stem and c.suffix.lower() in {".xlsx", ".xls", ".csv"}:
+                return c
+    raise LabelError(f"평가 시트가 없습니다: {f}  (FileName | Person1 | Person2 | … 형식의 xlsx)")
+
+
+def _find_column(df: pd.DataFrame, want: str) -> object | None:
+    w = _norm_value(want).casefold()
+    for c in df.columns:
+        if _norm_value(c).casefold() == w:
+            return c
+    return None
+
+
+def _column_label(df: pd.DataFrame, c: object) -> str:
+    """엑셀 열 문자(A, B, …)와 머리글. 메모 칸 안내에 쓴다."""
+    i = list(df.columns).index(c)
+    letters = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        letters = chr(65 + r) + letters
+    head = _norm_value(c)
+    return f"{letters}열({head[:30]})" if not head.lower().startswith("unnamed") else f"{letters}열(머리글 없음)"
+
+
+def read_judgement(s: Settings, notes: dict | None = None) -> pd.DataFrame:
+    """Judgement.xlsx (wide) → long. 평가자 열은 값으로 판별하고, 나머지는 notes 에 기록한다.
+
+    평가자 열 판정: 비어 있지 않은 셀의 절반 이상이 판정값(p/f/f(사유)…)으로 읽히면 평가자 열이다.
+    절반 미만이면 메모 칸으로 보고 제외한다. 평가자 열 안의 오타는 normalize() 가 오류로 멈춘다.
+    """
+    notes = {} if notes is None else notes
+    f = judgement_file(s)
+    sheet = s.input.judgement_sheet or 0
+    df = _read_one(f, sheet)
+    fcol = _find_column(df, s.input.file_column)
+    if fcol is None:
+        raise LabelError(f"{f.name}: 파일명 열 '{s.input.file_column}' 을 찾을 수 없습니다. "
+                         f"머리글: {[_norm_value(c) for c in df.columns][:12]} (config.input.file_column 확인)")
+    vm = _value_map(s)
+
+    raters: list[object] = []
+    ignored: list[dict] = []
+    for c in df.columns:
+        if c == fcol:
+            continue
+        vals = [v for v in df[c] if not _is_blank(v)]
+        if not vals:
+            ignored.append({"column": _column_label(df, c), "reason": "값이 없음"})
+            continue
+        ok = sum(1 for v in vals if parse_judgement(v, vm).y is not None)
+        if ok * 2 >= len(vals):
+            raters.append(c)
+            if _norm_value(c).lower().startswith("unnamed"):
+                ignored.append({"column": _column_label(df, c), "reason": "머리글 없는 평가자 열 — 열 이름으로 사용"})
+        else:
+            ignored.append({"column": _column_label(df, c),
+                            "reason": f"판정값이 아닌 셀이 대부분({len(vals) - ok}/{len(vals)}) — 메모로 보고 제외"})
+    if not raters:
+        raise LabelError(f"{f.name}: 평가자 열을 찾지 못했습니다. 값은 p / f / f(사유) 형식이어야 합니다.")
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    dup: list[str] = []
+    skipped = 0
+    for _, r in df.iterrows():
+        raw = r[fcol]
+        if _is_blank(raw) or _PLACEHOLDER.match(_norm_value(raw)):
+            skipped += 1
+            continue
+        did = tu.doc_id(raw)
+        if did in seen:
+            dup.append(did)
+            continue
+        seen.add(did)
+        for c in raters:
+            rows.append({"doc_id": did, "customer": None, "doc_type": None,
+                         "rater": _norm_value(c), "result": r[c], "source_file": f.name})
+
+    notes.update({
+        "judgement_file": str(f),
+        "sheet": sheet,
+        "file_column": _norm_value(fcol),
+        "raters": [_norm_value(c) for c in raters],
+        "ignored_columns": ignored,
+        "skipped_rows": skipped,
+        "duplicate_file_names": sorted(set(dup)),
+    })
+    return pd.DataFrame(rows, columns=[*CANON, "source_file"])
+
+
+# ---------------------------------------------------------------- 공통
+
+
 def normalize(long: pd.DataFrame, s: Settings) -> tuple[pd.DataFrame, list[dict]]:
+    """결과값 → y(1/0/nan) + 사유. 인식할 수 없는 값은 오류 목록으로 돌려준다."""
     vm = _value_map(s)
     errors: list[dict] = []
     ys: list[float] = []
+    causes: list[str] = []
     for _, row in long.iterrows():
-        v = row["result"]
-        if _is_blank(v):
+        j = parse_judgement(row["result"], vm)
+        if j.y is None:
             ys.append(np.nan)
-            continue
-        key = _norm_value(v).lower()
-        if key in vm:
-            ys.append(float(vm[key]))
-        else:
-            ys.append(np.nan)
+            causes.append("")
             errors.append({"doc_id": row["doc_id"], "rater": row["rater"],
-                           "value": _norm_value(v), "source_file": row.get("source_file", "")})
+                           "value": _norm_value(row["result"]), "source_file": row.get("source_file", "")})
+            continue
+        ys.append(j.y)
+        causes.append(CAUSE_JOIN.join(j.causes))
     out = long.copy()
     out["y"] = ys
+    out["cause"] = causes
     return out, errors
 
 
-def read_labels(s: Settings) -> pd.DataFrame:
-    files = read_label_files(s)
-    if not files:
-        raise LabelError(f"평가 시트가 없습니다: {s.p('labels')} (xlsx/csv)")
-    frames = [to_long(_read_one(f), s, f.name) for f in files]
-    long = pd.concat(frames, ignore_index=True)
+def read_labels(s: Settings, notes: dict | None = None) -> pd.DataFrame:
+    if s.inputdata:
+        long = read_judgement(s, notes)
+    else:
+        files = read_label_files(s)
+        if not files:
+            raise LabelError(f"평가 시트가 없습니다: {s.p('labels')} (xlsx/csv)")
+        long = pd.concat([to_long(_read_one(f), s, f.name) for f in files], ignore_index=True)
     long, errors = normalize(long, s)
     if errors:
         out = s.work / "labels"
         out.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(errors).to_csv(out / "label_value_errors.csv", index=False, encoding="utf-8")
         vals = sorted({e["value"] for e in errors})[:10]
+        hint = ("Judgement 값은 p / f / f(사유) 형식이어야 합니다. " if s.inputdata else "")
         raise LabelError(
             f"인식할 수 없는 평가 결과값 {len(errors)}건: {vals} → "
-            f"{out / 'label_value_errors.csv'} 확인 후 config.labels.pass_values/fail_values 에 추가하세요."
+            f"{out / 'label_value_errors.csv'} 확인. {hint}"
+            "다른 표기를 쓴다면 config.labels.pass_values/fail_values 에 추가하세요."
         )
     dup = long.duplicated(subset=["doc_id", "rater"], keep="first")
     if dup.any():
@@ -158,6 +334,54 @@ def filter_group(long: pd.DataFrame, g: Group, s: Settings, doc_ids: set[str] | 
     if doc_ids is not None:
         out = out[out["doc_id"].isin(doc_ids)]
     return out.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- 사유
+
+
+def cause_table(long: pd.DataFrame) -> pd.DataFrame:
+    """Fail 판정의 사유를 한 행에 하나씩 편다: doc_id | rater | cause | cause_key."""
+    rows: list[dict] = []
+    if "cause" in long.columns:
+        for _, r in long.iterrows():
+            if r["y"] == 0.0 and isinstance(r["cause"], str) and r["cause"]:
+                for c in r["cause"].split(CAUSE_JOIN):
+                    rows.append({"doc_id": str(r["doc_id"]), "rater": str(r["rater"]),
+                                 "cause": c, "cause_key": cause_key(c)})
+    return pd.DataFrame(rows, columns=["doc_id", "rater", "cause", "cause_key"])
+
+
+def cause_summary(long: pd.DataFrame, causes: pd.DataFrame) -> dict:
+    """사유별 건수·문서·평가자, 평가자별 사유 기재율. LLM 없이 계산한다."""
+    fails = long[long["y"] == 0.0]
+    with_cause = fails["cause"].fillna("").astype(str).str.len() > 0 if "cause" in fails else pd.Series(dtype=bool)
+    items = []
+    for key, grp in causes.groupby("cause_key", sort=False):
+        items.append({
+            "cause": grp["cause"].value_counts().index[0],      # 가장 흔한 표기
+            "key": key,
+            "variants": sorted(set(grp["cause"])),
+            "n_ratings": int(len(grp)),
+            "n_docs": int(grp["doc_id"].nunique()),
+            "raters": {str(k): int(v) for k, v in grp["rater"].value_counts().items()},
+            "docs": sorted(set(grp["doc_id"].astype(str))),
+        })
+    items.sort(key=lambda d: (-d["n_ratings"], d["cause"]))
+    by_rater = {}
+    for r, grp in fails.groupby(fails["rater"].astype(str)):
+        cs = causes[causes["rater"] == r]
+        by_rater[r] = {
+            "n_fail": int(len(grp)),
+            "n_fail_with_cause": int((grp["cause"].fillna("").astype(str).str.len() > 0).sum()),
+            "top_causes": [str(x) for x in cs["cause"].value_counts().index[:5]],
+        }
+    return {
+        "n_fail_ratings": int(len(fails)),
+        "n_fail_with_cause": int(with_cause.sum()) if len(with_cause) else 0,
+        "n_distinct_causes": int(causes["cause_key"].nunique()) if len(causes) else 0,
+        "causes": items,
+        "by_rater": by_rater,
+    }
 
 
 # ---------------------------------------------------------------- Dawid-Skene
@@ -339,8 +563,18 @@ def doc_targets(long: pd.DataFrame, agree: dict) -> pd.DataFrame:
             "y_unanimous": (int(ratio == 1.0) if n >= 3 else np.nan),
             "y_ds": int(post.get(doc_id, np.nan) >= 0.5) if doc_id in post else np.nan,
             "ds_posterior": round(post.get(doc_id, np.nan), 4) if doc_id in post else np.nan,
+            "causes": _doc_causes(grp),
         })
     return pd.DataFrame(rows).sort_values("doc_id").reset_index(drop=True)
+
+
+def _doc_causes(grp: pd.DataFrame) -> str:
+    """문서 1건의 Fail 사유를 `평가자: 사유` 로 모은다 (리포트·시각화 표시용)."""
+    if "cause" not in grp.columns:
+        return ""
+    out = [f"{r}: {c}" for r, c, y in zip(grp["rater"].astype(str), grp["cause"].fillna("").astype(str),
+                                          grp["y"], strict=False) if y == 0.0 and c]
+    return " | ".join(out)
 
 
 def choose_target(targets: pd.DataFrame, s: Settings) -> dict:
@@ -385,13 +619,22 @@ def run(s: Settings, g: Group, doc_ids: set[str] | None = None) -> dict:
     out_dir = s.work / "labels" / g.safe
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    long_all = read_labels(s)
+    notes: dict = {}
+    long_all = read_labels(s, notes)
+    if doc_ids is not None:
+        # 시트 FileName 과 PDF 파일명이 대소문자·공백만 다르면 PDF 쪽 ID 로 맞춘다 (ingest 와 같은 규칙)
+        mapping, _ = tu.match_doc_ids(set(long_all["doc_id"].astype(str)), set(doc_ids))
+        long_all = long_all.assign(doc_id=long_all["doc_id"].astype(str).map(lambda d: mapping.get(d, d)))
     long = filter_group(long_all, g, s, doc_ids)
     if long.empty:
         raise LabelError(f"그룹 {g.key} 에 해당하는 평가 행이 없습니다.")
 
-    saved = save_table(long[["doc_id", "customer", "doc_type", "rater", "result", "y", "source_file"]],
+    saved = save_table(long[["doc_id", "customer", "doc_type", "rater", "result", "y", "cause", "source_file"]],
                        out_dir / "labels_long")
+    causes = cause_table(long)
+    causes.to_csv(out_dir / "causes_long.csv", index=False, encoding="utf-8")
+    csum = cause_summary(long, causes)
+    (out_dir / "cause_summary.json").write_text(json.dumps(csum, ensure_ascii=False, indent=1), encoding="utf-8")
     agree = agreement_stats(long)
     targets = doc_targets(long, agree)
     targets.to_csv(out_dir / "doc_targets.csv", index=False, encoding="utf-8")
@@ -408,6 +651,8 @@ def run(s: Settings, g: Group, doc_ids: set[str] | None = None) -> dict:
     agree_out = {k: v for k, v in agree.items() if not k.startswith("_")}
     agree_out["target"] = tsel
     agree_out["warnings"] = warnings_
+    agree_out["input_notes"] = notes
+    agree_out["causes"] = {k: csum[k] for k in ("n_fail_ratings", "n_fail_with_cause", "n_distinct_causes")}
     (out_dir / "agreement.json").write_text(json.dumps(agree_out, ensure_ascii=False, indent=1), encoding="utf-8")
 
     return {
@@ -415,10 +660,15 @@ def run(s: Settings, g: Group, doc_ids: set[str] | None = None) -> dict:
         "labels_table": str(saved.relative_to(s.root)),
         "n_docs": int(len(targets)),
         "n_ratings": agree["n_ratings"],
+        "raters": agree.get("raters"),
         "krippendorff_alpha": alpha,
         "fleiss_kappa": agree.get("fleiss_kappa"),
         "strictest_rater": agree.get("strictest_rater"),
         "target": tsel,
+        "fail_causes": (f"Fail {csum['n_fail_ratings']}건 중 사유 기재 {csum['n_fail_with_cause']}건, "
+                        f"서로 다른 사유 {csum['n_distinct_causes']}종"),
+        "top_causes": [f"{c['cause']} ({c['n_ratings']}건/{c['n_docs']}문서)" for c in csum["causes"][:5]],
+        "ignored_columns": [f"{x['column']}: {x['reason']}" for x in notes.get("ignored_columns", [])],
         "warnings": warnings_,
     }
 
@@ -437,3 +687,18 @@ def load_agreement(s: Settings, g: Group) -> dict:
 
 def load_long(s: Settings, g: Group) -> pd.DataFrame:
     return load_table(s.work / "labels" / g.safe / "labels_long")
+
+
+def load_causes(s: Settings, g: Group) -> pd.DataFrame:
+    """Fail 사유 표. 사유가 없는 데이터(legacy)면 빈 표."""
+    f = s.work / "labels" / g.safe / "causes_long.csv"
+    cols = ["doc_id", "rater", "cause", "cause_key"]
+    if not f.exists():
+        return pd.DataFrame(columns=cols)
+    df = pd.read_csv(f, dtype=str).fillna("")
+    return df if len(df.columns) else pd.DataFrame(columns=cols)
+
+
+def load_cause_summary(s: Settings, g: Group) -> dict:
+    f = s.work / "labels" / g.safe / "cause_summary.json"
+    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}

@@ -76,12 +76,16 @@ class TitleMappings(BaseModel):
 
 
 class Concept(BaseModel):
-    id: str                               # 예: C012
+    id: str                               # 예: C012 (가설), K001 (평가자 사유에서 온 기준)
     question: str                         # "D4에 5Why(또는 동등한 단계적 원인분석) 표가 있는가?"
     section_id: str | None = None
     type: Literal["structure", "content_completeness", "format", "quantitative"]
     actionable: bool
     rationale: str
+    # 출처: hypothesis = Pass/Fail 대조로 만든 가설, cause = 평가자가 남긴 Fail 사유에서 만든 기준
+    source: Literal["hypothesis", "cause"] = "hypothesis"
+    cause_refs: list[str] = Field(default_factory=list,
+                                  description="source=cause 일 때 이 기준으로 묶은 평가자 사유 원문")
 
 
 class ConceptCandidates(BaseModel):

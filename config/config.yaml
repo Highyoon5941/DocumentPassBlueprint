@@ -1,7 +1,16 @@
 # Valeo_SVMtrial 설정 (SETUP.md §14)
+input:
+  # 2026-10-14 확정 입력. legacy 로 바꾸면 SETUP.md §6 의 data/raw/pdfs/<doc_type>/<customer>/ 구조를 쓴다.
+  layout: inputdata               # inputdata | legacy
+  root: InputData                 # InputData/Documents/*.pdf + InputData/Judgement.xlsx
+  documents: Documents
+  judgement: Judgement.xlsx       # FileName | Person1 | Person2 | … , 값 p / f / f(사유)
+  judgement_sheet: ""             # 비우면 첫 시트
+  file_column: FileName
+  doc_type: ""                    # 비우면 그룹명 InputData. 예: 대책서 → 8D 섹션 seed 사용(자율 모드 제외)
 paths:
-  raw_pdfs: data/raw/pdfs
-  labels: data/raw/labels
+  raw_pdfs: data/raw/pdfs         # legacy 레이아웃 전용
+  labels: data/raw/labels         # legacy 레이아웃 전용
   work: work
   outputs: outputs
 labels:
@@ -9,7 +18,9 @@ labels:
   pass_values: [Pass, P, OK, O, "○", 합격, "1", Y]
   fail_values: [Fail, F, NG, X, "×", 불합격, "0", N]
 ingest:
+  # 모든 PDF 는 페이지마다 이미지로 바꾼 뒤 이미지로만 처리한다 (텍스트 레이어·PDF 메타는 참고값).
   dpi: 150
+  max_long_edge_px: 2400          # 페이지 크기가 제각각이어도 이미지 긴 변을 이 안으로 맞춘다
   landscape_ratio: 1.25
   retry_dpi: 250                  # 판독성 < ocr.min_legibility 인 페이지 재렌더 dpi
 gemini:
@@ -37,6 +48,7 @@ analysis:
   method: svm                # svm | logistic | hierarchical
   objective: decision_value  # decision_value | all_pass_prob
   monotone: false            # 존재 특징 계수 >= 0 제약
+  use_causes: true           # Judgement 의 f(사유) → 기준(개념) 후보. 누수 방지를 위해 발견셋 사유만 쓴다
   target: unanimous               # unanimous | majority | ratio | ds
   pool_customers: false
   split: {discovery: 0.6, seed: 42}

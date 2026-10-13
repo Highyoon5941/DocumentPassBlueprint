@@ -2,7 +2,7 @@
 
 > Valeo_SVMtrial — 실행 방법
 > 개념과 구조: [`Architecture.md`](Architecture.md) · 사내망 전환: [`migration_vertexAI.md`](migration_vertexAI.md) · 설계 기준: [`Valeo_SVMtrial_SETUP.md`](Valeo_SVMtrial_SETUP.md)
-> 작성 2026-10-05
+> 작성 2026-10-05 · 갱신 2026-10-14 — **확정 입력 `InputData/` 반영** ([`1014_inputdata.md`](1014_inputdata.md))
 
 ---
 
@@ -14,7 +14,9 @@
 | 프로젝트 루트 | `/home/kty2/Valeo_SVM_trial1` |
 | 백엔드 | **`offline`** — Gemini 를 호출하지 않는 결정론 스텁 |
 | 실데이터 분석 | ❌ 불가. [`migration_vertexAI.md`](migration_vertexAI.md) 로 전환해야 한다 |
-| 더미 데이터 | `data/dummy/` (PDF 80건, 평가 400행) — 파이프라인 검증용 |
+| **입력 (확정)** | `InputData/Documents/*.pdf` + `InputData/Judgement.xlsx` (FileName \| Person1 \| … , 값 `p` / `f` / `f(사유)`) |
+| 더미 데이터 (확정 형식) | `data/dummy_input/InputData/` (PDF 60건, 평가자 4명) — §4ter |
+| 더미 데이터 (legacy 형식) | `data/dummy/` (PDF 80건, 평가 400행) — 파이프라인 검증용 |
 
 ---
 
@@ -79,12 +81,12 @@ python -m svmtrial <명령> [옵션]
 | 명령 | 단계 | 하는 일 | Gemini |
 |---|---|---|---|
 | `doctor` | — | 환경·설정 점검, 그룹 탐색 | 없음 |
-| `ingest` | S1 | PDF → 페이지 PNG + 메타 + 형식(docs/slides) 판정 | 조건부 |
+| `ingest` | S1 | **모든 PDF 를 페이지 이미지로 변환** + 메타 + 형식(docs/slides) 판정(이미지로만) | 조건부 |
 | `ocr` | S2 | 페이지 구조 추출 → `doc_outline.json` | **대량** |
-| `labels` | S3 | 평가자 일치도(κ/α), Dawid-Skene, 타깃 결정 | 없음 |
+| `labels` | S3 | 평가자 일치도(κ/α), Dawid-Skene, 타깃 결정, **Fail 사유 표·통계** | 없음 |
 | `sections` | S4a | 섹션 분류체계 후보 생성 **🔒** + 제목 매핑 | 있음 |
-| `concepts discover` | S4b | Pass/Fail 대조로 개념 가설 생성 **🔒** | 있음 |
-| `concepts score` | S4c | 문서 × 개념 0/1 행렬 + 구조 특징 | **대량** |
+| `concepts discover` | S4b | **평가자 사유 → 기준(K…)** + Pass/Fail 대조 가설(C…) **🔒** | 있음 |
+| `concepts score` | S4c | 문서 × 개념 0/1 행렬 + 구조 특징 + 사유-채점 일치율 | **대량** |
 | `model` | S5 | 단변량 + 다변량 + 안정성 + 등급 + 평가자별 + 반사실 | 없음 |
 | `template` | S6 | `template_spec.json/md` + `template.docx\|pptx` **🔒** | 있음 |
 | `report` | — | `analysis_report.md` + 차트 | 없음 |
@@ -96,7 +98,7 @@ python -m svmtrial <명령> [옵션]
 
 | 옵션 | 의미 |
 |---|---|
-| `--group`, `-g` | 분석 그룹 (예: `대책서__CUST_A`). 생략하면 발견된 모든 그룹 |
+| `--group`, `-g` | 분석 그룹. **InputData 입력은 그룹이 1개라 생략한다** (legacy: `대책서__CUST_A` 등, 생략하면 전부) |
 | `--dry-run` | Gemini 호출 없이 **호출 수와 예상 토큰만** 출력 |
 | `--force` | 캐시를 무시하고 다시 호출 |
 | `--config` | `config.yaml` 경로 (기본 `config/config.yaml`) |
@@ -148,10 +150,12 @@ offline fixture 232페이지 → work/offline_fixtures/pages.json
 
 ### 4.2 더미용 config 만들기
 
-기본 `config.yaml` 은 `data/raw/` 를 가리킨다. 더미는 `data/dummy/` 이므로 사본을 만든다.
+기본 `config.yaml` 은 확정 입력(`InputData/`)을 가리킨다. 이 더미는 legacy 형식(`data/dummy/`)이므로
+레이아웃을 `legacy` 로 바꾼 사본을 만든다.
 
 ```bash
-sed -e 's|data/raw/pdfs|data/dummy/pdfs|' -e 's|data/raw/labels|data/dummy/labels|' \
+sed -e 's|layout: inputdata|layout: legacy|' \
+    -e 's|data/raw/pdfs|data/dummy/pdfs|' -e 's|data/raw/labels|data/dummy/labels|' \
     config/config.yaml > /tmp/config_dummy.yaml
 export CFG=/tmp/config_dummy.yaml
 ```
@@ -296,36 +300,83 @@ python -m svmtrial ocr --dry-run     # 568회 호출 / 약 1,022,400 토큰 (페
 
 ---
 
+## 4ter. 확정 입력 형식(InputData)으로 더미 돌려보기
+
+실데이터와 **같은 폴더 구조·시트 모양**으로 만든 더미다. 예시 시트처럼 빈 평가자 열, `..` 열·행,
+"examples of cause" 메모 칸이 들어 있고, Fail 셀의 절반 이상에 `f(사유)` 가 적혀 있다.
+
+```bash
+python scripts/make_dummy_data.py --layout inputdata --out data/dummy_input --n 60 --seed 3
+sed -e 's|^  root: InputData |  root: data/dummy_input/InputData |' config/config.yaml > /tmp/config_input.yaml
+export CFG=/tmp/config_input.yaml
+
+python -m svmtrial all --config $CFG                       # 🔒 섹션 관문에서 멈춤
+python -m svmtrial approve --gate sections --config $CFG
+python -m svmtrial all --config $CFG                       # 🔒 개념 관문에서 멈춤 — 사유 기준 K… 확인
+python -m svmtrial approve --gate concepts --config $CFG
+python -m svmtrial all --config $CFG                       # 완주
+python scripts/viz_gallery.py --config $CFG --out outputs/viz   # 시각화 후보 미리보기 (선택)
+```
+
+2026-10-14 실측: 숨김 규칙 3개 → `K001` 확정 / `K002`·`K003` 유력, 잡음 2개 기각, 순열검정 p = 0.002,
+사유-채점 일치율 97% (의도적으로 넣은 오기 때문에 100% 가 아니다). 자세한 내용: [`1014_inputdata.md`](1014_inputdata.md)
+
+---
+
 ## 5. 실데이터로 돌리기
 
 > ⚠ **먼저 [`migration_vertexAI.md`](migration_vertexAI.md) 를 따라 `SVMTRIAL_BACKEND=vertex` 로 전환해야 한다.**
 > offline 백엔드로 실데이터를 돌리면 OCR 이 아무것도 읽지 못하고, "요소가 하나도 없는 문서들"로 분석된다.
 
-### 5.1 입력 데이터 넣기
+### 5.1 입력 데이터 넣기 (확정 형식, 2026-10-14)
+
+```
+InputData/
+├─ Documents/          분석할 PDF 전부 (하위 폴더도 읽는다)
+│   ├─ a.pdf
+│   └─ …
+└─ Judgement.xlsx      평가 시트
+```
+
+**규칙** (같은 내용이 `InputData/README.md` 에 있다)
+
+| 항목 | 내용 |
+|---|---|
+| `FileName` | **PDF 파일명(확장자 제외)**. `a.pdf` 처럼 확장자를 붙여도 된다. 대소문자·공백만 다르면 연결하고 이슈로 남긴다 |
+| 분석 단위 | `Documents` 전체가 **그룹 1개** (`InputData`). `input.doc_type: 대책서` 로 두면 그룹명이 `대책서` 가 되고 8D seed 를 쓴다 |
+| PDF 처리 | **모든 PDF 를 페이지마다 이미지로 바꾼 뒤 이미지로만 판단한다.** 텍스트 레이어·PDF 메타(creator)는 참고값 |
+| 불일치 | 시트에만 있거나 PDF 에만 있는 문서, PDF 가 아닌 파일, 이름이 겹치는 PDF, 열리지 않는 PDF 는 `work/ingest_issues.csv` 에 기록하고 제외 |
+
+### 5.2 평가 시트 형식 — `Judgement.xlsx`
+
+| FileName | Person1 | Person2 | Person3 | … |
+|---|---|---|---|---|
+| a | p | f(향후 계획 미기입) | | |
+| c | f(사진 부적합) | p | | |
+| e | f | f(향후 일정 미기입, 사진 부적합) | | |
+
+| 값 | 의미 |
+|---|---|
+| `p` (`P`, `Pass`, `합격`, `OK` …) | Pass |
+| `f` (`F`, `Fail`, `불합격`, `NG` …) | Fail (사유 없음) |
+| `f(사유)` | 사유가 있는 Fail. 사유 여러 개는 쉼표·세미콜론·줄바꿈. 전각 괄호 `（）` 도 된다 |
+| `p(코멘트)` | Pass. 괄호 안은 **사유로 쓰지 않는다** |
+| 빈칸 | 미평가 (일치도 계산에서 결측) |
+
+- **평가자 열은 값으로 판별한다.** 비어 있지 않은 셀의 절반 이상이 위 값이면 평가자 열이다.
+  메모 칸(예: "examples of cause"), 값이 없는 열(빈 Person3, `..`), FileName 이 비었거나 `..` 인 행은
+  자동으로 빼고 리포트 §2 에 적는다.
+- 평가자 열 안에 읽을 수 없는 값(오타)이 있으면 **즉시 중단**하고 `work/labels/label_value_errors.csv` 를 남긴다.
+- 사유는 S4b 에서 **기준(분석 차원) 후보**가 된다 (발견셋 문서의 사유만 — 누수 방지). 끄려면 `analysis.use_causes: false`.
+
+<details><summary>legacy 레이아웃 (SETUP.md §6·§7 — <code>input.layout: legacy</code>)</summary>
 
 ```
 data/raw/pdfs/<문서종류>/<고객사>/<doc_id>.pdf
 data/raw/labels/*.xlsx
 ```
 
-예:
-
-```
-data/raw/pdfs/대책서/현대/HD_2025_001.pdf
-data/raw/pdfs/대책서/현대/HD_2025_002.pdf
-data/raw/labels/2025_평가결과.xlsx
-```
-
-**규칙**
-
-| 항목 | 내용 |
-|---|---|
-| `doc_id` | **PDF 파일명(확장자 제외)** 이다. 평가 시트의 `doc_id` 와 **반드시 일치**해야 한다 |
-| 분석 단위 | `(문서종류, 고객사)` = 그룹. 그룹 이름은 `문서종류__고객사` |
-| PDF 전제 | **이미지 기반(스캔본)** 을 기본으로 본다. 텍스트 레이어는 무시한다 |
-| 불일치 | 시트에만 있거나 PDF 에만 있는 문서는 `work/ingest_issues.csv` 에 기록하고 제외한다 |
-
-### 5.2 평가 시트 형식
+분석 단위는 `(문서종류, 고객사)` 그룹 (`문서종류__고객사`). 평가 시트는 아래 long/wide 형식.
 
 **권장: long 형식** (평가 1건 = 1행)
 
@@ -351,11 +402,13 @@ data/raw/labels/2025_평가결과.xlsx
 > 그 파일을 보고 `config.yaml` 의 `labels.pass_values` / `fail_values` 에 추가한다.
 > 열 이름이 다르면 `labels.columns` 로 매핑한다 ([`migration_vertexAI.md` §4.2](migration_vertexAI.md)).
 
+</details>
+
 ### 5.3 비용·시간 추정부터
 
 ```bash
-python -m svmtrial ingest --group 대책서__현대
-python -m svmtrial ocr --group 대책서__현대 --dry-run
+python -m svmtrial ingest
+python -m svmtrial ocr --dry-run
 ```
 
 `ocr` 이 호출 수의 대부분을 차지한다 (페이지 1장 = 1회).
@@ -364,8 +417,8 @@ python -m svmtrial ocr --group 대책서__현대 --dry-run
 ### 5.4 작은 그룹 또는 일부 문서로 먼저
 
 ```bash
-python -m svmtrial ocr --group 대책서__현대 --limit 5
-cat work/ocr/HD_2025_001/doc_outline.json | head -40
+python -m svmtrial ocr --limit 5
+cat work/ocr/<FileName>/doc_outline.json | head -40
 ```
 
 제목 계층과 표 열 이름이 제대로 들어왔는지 확인한다.
@@ -373,13 +426,14 @@ cat work/ocr/HD_2025_001/doc_outline.json | head -40
 ### 5.5 전체 실행
 
 ```bash
-python -m svmtrial all --group 대책서__현대
+python -m svmtrial all
 #   → 🔒 에서 멈춤 → 후보 검토 → approve → 다시 all  (§4.3 과 같은 흐름)
 ```
 
 ### 5.6 단계별로 돌리기
 
 `all` 대신 하나씩 돌릴 수도 있다. 중간 산출물이 남으므로 이어서 실행된다.
+(InputData 입력은 그룹이 하나라 `--group $G` 를 빼도 된다.)
 
 ```bash
 python -m svmtrial ingest           --group $G

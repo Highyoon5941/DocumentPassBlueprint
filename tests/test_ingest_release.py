@@ -59,12 +59,14 @@ def test_release_forbidden_patterns():
         "outputs/run/x.docx", "logs/run/gemini_calls.jsonl", "dist/old.zip",
         "src/__pycache__/x.pyc",
         "src/svmtrial.egg-info/PKG-INFO", "src/svmtrial.egg-info/SOURCES.txt",
+        "InputData/Judgement.xlsx", "InputData/Documents/a.pdf", "InputData/Documents/sub/b.pdf",
     ]
     for rel in must_block:
         assert brel.is_forbidden(rel), f"차단되어야 함: {rel}"
 
     must_allow = ["src/svmtrial/cli.py", "prompts/ocr_page.v1.md", "config/config.yaml",
-                  ".env.example", "requirements.txt", "docs/Runbook.md", "windows/run_windows.bat"]
+                  ".env.example", "requirements.txt", "docs/Runbook.md", "windows/run_windows.bat",
+                  "InputData/README.md"]
     for rel in must_allow:
         assert not brel.is_forbidden(rel), f"포함되어야 함: {rel}"
 

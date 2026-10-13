@@ -11,7 +11,8 @@
 ## 무엇을 푸는 문제인가
 
 같은 종류의 문서(대책서 등) 여러 건이 있고, 평가자 여러 명이 각각 Pass/Fail 을 매겼다.
-**사유는 남아 있지 않다.** 왜 어떤 문서는 5명 전원이 합격시켰고 어떤 문서는 4명만 합격시켰는지 아무도 적어두지 않았다.
+**사유는 일부만 남아 있다** — Fail 일 때 `f(향후 계획 미기입)` 처럼 짧게 적거나 아예 적지 않는다.
+왜 어떤 문서는 전원이 합격시켰고 어떤 문서는 일부만 합격시켰는지는 정리돼 있지 않다.
 
 이 도구는 Pass/Fail **예측기를 만드는 것이 목적이 아니다.** Pass/Fail 데이터는 수단이다.
 
@@ -44,8 +45,8 @@
 
 | 구분 | 내용 |
 |---|---|
-| 입력 1 | 같은 성격의 문서 PDF 여러 개. **이미지 기반(스캔본)을 기본 전제**로 한다 |
-| 입력 2 | 평가 시트(xlsx). 문서별로 평가자 여러 명이 Pass/Fail 을 매겼고 사유는 없다 |
+| 입력 1 | `InputData/Documents/*.pdf` — 같은 성격의 문서 PDF 여러 개. **모든 PDF 를 페이지 이미지로 바꿔 이미지로만 처리한다** |
+| 입력 2 | `InputData/Judgement.xlsx` — `FileName \| Person1 \| Person2 \| …`, 값 `p` / `f` / `f(사유)` ([`InputData/README.md`](InputData/README.md)) |
 | 출력 1 | `template_spec.json` / `.md` — 섹션 구조, 필수 요소, 작성 가이드, 근거 통계 |
 | 출력 2 | `template.docx` 또는 `template.pptx` — 바로 쓰는 템플릿 (원본 형식에 맞춤) |
 | 출력 3 | `analysis_report.md` — 평가자 일치도, Pass를 가르는 요인, 신뢰도, 한계 |
@@ -56,17 +57,21 @@
 ## 파이프라인
 
 ```
- PDF (스캔본)  ─S1 ingest───▶ 페이지 PNG + 메타 + 원본형식(docs/slides) 판정
+ InputData/Documents/*.pdf
+        ─S1 ingest───▶ 모든 페이지를 이미지로 (스캔본·디지털 PDF 구분 없음) + 원본형식 판정(이미지로만)
                     │
-                    └─S2 ocr (Gemini Flash, 페이지별)──▶ 제목계층·블록·표·그림·서명
+                    └─S2 ocr (비전 LLM, 페이지별)──▶ 제목계층·블록·표·그림·서명
                                                         │
- 평가 xlsx ─S3 labels──▶ Fleiss κ / Krippendorff α / Dawid-Skene / 평가자 엄격도
+ InputData/Judgement.xlsx (p / f / f(사유))
+        ─S3 labels──▶ Fleiss κ / Krippendorff α / Dawid-Skene / 평가자 엄격도 + Fail 사유 표
                          타깃: y_unanimous | y_majority | y_ds | pass_ratio
                                                         │
-        S4a sections : 제목 → 표준 섹션 분류체계 (8D seed)      Gemini Pro + 🔒
-        S4b concepts : Pass/Fail 대조 → 예/아니오 개념 가설      Gemini Pro + 🔒
-                       (발견셋 60% 에서만 — 누수 방지)
-        S4c score    : 문서 × 개념 0/1 행렬 + 결정론 구조 특징   Gemini Flash
+        S4a sections : 제목 → 표준 섹션 분류체계                  LLM Pro + 🔒
+        S4b concepts : ① 평가자 사유 → 예/아니오 기준 (K…)        LLM Pro + 🔒
+                       ② Pass/Fail 대조 → 예/아니오 가설 (C…)
+                       (둘 다 발견셋 60% 에서만 — 누수 방지)
+        S4c score    : 문서 × 개념 0/1 행렬 + 결정론 구조 특징   LLM Fast
+                       + 사유-채점 일치율 (평가자 진술로 채점 정확도 점검)
                                                         │
         S5 model     : 단변량(Fisher + BH-FDR) + 선형SVM/L1로지스틱/트리/RuleFit
                        + 교차검증 + 순열검정 + 부트스트랩 안정성
@@ -100,7 +105,31 @@
 
 ---
 
-## 빠른 시작 (더미 데이터)
+## 빠른 시작
+
+### 실데이터 (확정 입력)
+
+```
+InputData/Documents/*.pdf      ← PDF 를 넣는다
+InputData/Judgement.xlsx       ← FileName | Person1 | Person2 | …  (p / f / f(사유))
+```
+
+```bash
+python -m svmtrial doctor        # 문서 수·평가 시트 확인
+python -m svmtrial all           # 🔒 관문에서 멈춘다 → 검토 → approve --gate sections|concepts → 다시 all
+```
+
+> 실데이터는 `SVMTRIAL_BACKEND=claude`(권장) 또는 `vertex` 가 필요하다 (아래 "백엔드").
+
+### 확정 입력 형식의 더미 (offline 으로 전 과정 시험)
+
+```bash
+python scripts/make_dummy_data.py --layout inputdata --out data/dummy_input --n 60 --seed 3
+sed -e 's|^  root: InputData |  root: data/dummy_input/InputData |' config/config.yaml > /tmp/config_input.yaml
+python -m svmtrial all --config /tmp/config_input.yaml     # 이후 흐름은 위와 같다
+```
+
+### legacy 형식 더미 (SETUP.md 원래 구조)
 
 ```bash
 conda env create -f environment.yml      # 환경 이름: Valeo_SVM_Trial
@@ -112,8 +141,9 @@ unset PYTHONPATH                         # ⚠ 아래 "알려진 함정" 참고
 python scripts/smoke_test.py             # ALL SMOKE TESTS PASSED
 python scripts/make_dummy_data.py --out data/dummy --n 40
 
-# 더미 경로를 가리키는 config 사본
-sed -e 's|data/raw/pdfs|data/dummy/pdfs|' -e 's|data/raw/labels|data/dummy/labels|' \
+# 더미 경로를 가리키는 config 사본 (legacy 레이아웃)
+sed -e 's|layout: inputdata|layout: legacy|' \
+    -e 's|data/raw/pdfs|data/dummy/pdfs|' -e 's|data/raw/labels|data/dummy/labels|' \
     config/config.yaml > /tmp/config_dummy.yaml
 export CFG=/tmp/config_dummy.yaml  G=대책서__CUST_A
 
@@ -140,7 +170,8 @@ python scripts/verify_dummy.py -g $G --config $CFG  # 숨김 정답 복원 검�
 
 ```bash
 cp -r Valeo_SVMtrial_sample_data/data/raw/. data/raw/
-python -m svmtrial ingest && python -m svmtrial labels
+sed -e 's|layout: inputdata|layout: legacy|' config/config.yaml > /tmp/config_sample.yaml
+python -m svmtrial ingest --config /tmp/config_sample.yaml && python -m svmtrial labels --config /tmp/config_sample.yaml
 ```
 
 PDF 바이너리(40MB)는 git 에서 제외돼 있고 생성 스크립트로 **같은 내용이 재현된다**.
@@ -168,6 +199,8 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | [`docs/1007_night_SVM.md`](docs/1007_night_SVM.md) | **구현보고서** — 학습 없이 SVM을 쓰는 방식, 문서종류 불변성 실증 |
 | [`docs/1007_night_alternatives.md`](docs/1007_night_alternatives.md) | SVM 외 대안, 로지스틱 구현 방향, Claude 전환 |
 | [`docs/autonomous_pipeline.md`](docs/autonomous_pipeline.md) | **자율 기준 선정 + 로지스틱 + 형식 자유 출력** — 사람 의견 배제, LayoutSpec, 예산별 최적 조합 |
+| **[`docs/1014_inputdata.md`](docs/1014_inputdata.md)** | **확정 입력 반영 (2026-10-14)** — InputData 구조, Judgement `f(사유)` → 기준(차원), 이미지 기반 통일, 검증 결과 |
+| **[`docs/visualization_options.md`](docs/visualization_options.md)** | **시각화 방안 목록** — 정답 경계와 문서 간 관계를 보는 8가지 + 미리보기 (`scripts/viz_gallery.py`) |
 | [`docs/claude_backend_guide.md`](docs/claude_backend_guide.md) | **Claude 백엔드 적용 방법** — 설치·인증·비용 산정·소규모 검증·문제 해결 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 
@@ -194,7 +227,9 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 
 - 문서와 이미지는 **`.env` 에 설정된 회사 GCP 프로젝트의 Vertex AI 엔드포인트로만** 보낸다. 다른 API·웹서비스·텔레메트리로는 보내지 않는다
 - 모든 Gemini 호출은 `src/svmtrial/gemini_client.py` 한 곳을 지난다. `google-genai` 를 import 하는 모듈은 `vertex_backend.py` 하나뿐이다
-- 평가 시트(평가자 이름·판정)는 **로컬에서만** 처리하며 외부로 보내지 않는다
+- 평가 시트(평가자 이름·판정)는 **로컬에서만** 처리하며 외부로 보내지 않는다.
+  예외 하나(2026-10-14 사용자 승인): `f(사유)` 의 **사유 문구와 건수**는 기준 후보를 만들려고 LLM 에 보낸다 — 평가자 이름·문서명은 빼고 보낸다.
+  이것도 막으려면 `analysis.use_causes: false` (사유 통계는 로컬에서 그대로 만든다)
 - `data/` `work/` `outputs/` `logs/` `.env` 인증키는 git 과 배포 zip 에서 항상 제외된다 (빌드 시 자동 검사, 위반 시 **빌드 실패**)
 
 ---
@@ -208,11 +243,11 @@ python -m svmtrial <명령> [--group G] [--dry-run] [--force] [--config PATH]
 | 명령 | 단계 | 하는 일 |
 |---|---|---|
 | `doctor` | — | 환경·설정 점검, 그룹 탐색 |
-| `ingest` | S1 | PDF → 페이지 PNG + 메타 + 형식 판정 |
+| `ingest` | S1 | 모든 PDF → 페이지 이미지 + 메타 + 형식 판정 (이미지 기반 통일) |
 | `ocr` | S2 | 페이지 구조 추출 (`--limit N` 으로 일부만) |
-| `labels` | S3 | 평가자 일치도, Dawid-Skene, 타깃 결정 |
+| `labels` | S3 | 평가자 일치도, Dawid-Skene, 타깃 결정, Fail 사유 통계 |
 | `sections` | S4a | 섹션 분류체계 후보 🔒 + 제목 매핑 |
-| `concepts discover` | S4b | Pass/Fail 대조로 개념 가설 생성 🔒 |
+| `concepts discover` | S4b | 평가자 사유 → 기준 + Pass/Fail 대조 가설 🔒 |
 | `concepts score` | S4c | 문서 × 개념 행렬 |
 | `model` | S5 | 통계 분석 + 등급 판정 + 반사실 |
 | `template` | S6 | 템플릿 명세 + docx/pptx 🔒 |
@@ -236,7 +271,8 @@ python -m svmtrial <명령> [--group G] [--dry-run] [--force] [--config PATH]
 ├─ windows/             setup_windows.bat / run_windows.bat / README
 ├─ config/config.yaml   모든 하이퍼파라미터
 ├─ docs/                Architecture / Runbook / migration_vertexAI / SETUP
-├─ data/                raw/pdfs/<doc_type>/<customer>/*.pdf , raw/labels/*.xlsx   (git 제외)
+├─ InputData/           Documents/*.pdf + Judgement.xlsx — 확정 입력 (README.md 만 git 추적)
+├─ data/                더미·샘플, legacy 입력 raw/pdfs/<doc_type>/<customer>/          (git 제외)
 ├─ work/                중간 산출물 + Gemini 응답 캐시                              (git 제외)
 └─ outputs/<run_id>/<group>/   최종 산출물                                          (git 제외)
 ```
@@ -244,6 +280,17 @@ python -m svmtrial <명령> [--group G] [--dry-run] [--force] [--config PATH]
 ---
 
 ## 검증 상태
+
+**확정 입력 형식** (2026-10-14, offline 백엔드 + `data/dummy_input` PDF 60건 × 평가자 4명):
+
+| 항목 | 결과 |
+|---|---|
+| `./scripts/run_tests.sh` | **221 passed** (기존 183 + 확정 입력·사유·이미지 기반 38) |
+| Judgement 판독 | 평가자 열 4개 인식, 빈 열·`..` 열·메모 칸("examples of cause") 제외, `..` 행 건너뜀 |
+| 사유 → 기준 | Fail 108건 중 사유 97건(4종) → 기준 K001~K004. 같은 것을 묻는 가설 3개는 중복으로 제거 |
+| 숨김 규칙 복원 | K001 `확정`, K002·K003 `유력`, 잡음 2개 `기각`, 순열검정 p = 0.002 |
+| 사유-채점 일치율 | 97% (의도적 오기 포함) |
+| legacy 회귀 | `verify_dummy.py -g 대책서__CUST_A` → Phase 6 **합격** |
 
 offline 백엔드 + 더미 데이터(PDF 80건 / 평가 400행) 기준:
 

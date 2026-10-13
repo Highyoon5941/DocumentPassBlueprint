@@ -388,8 +388,9 @@ def fit_primary(
         return (fit_monotone_logistic(X, y, nonneg) if s.analysis.monotone
                 else fit_logistic(s, X, y))
     w = fit_svm_weights(s, X, y, "svm_C0.1")
-    return {"kind": "svm", "weights": w["weights"], "intercept": w["intercept"],
-            "odds_ratio": {}, "p_values": dict.fromkeys(X.columns)}
+    # numpy 스칼라를 그대로 두면 하류(objective.json)의 비교 결과가 numpy.bool 이 되어 JSON 저장이 깨진다
+    return {"kind": "svm", "weights": {k: float(v) for k, v in w["weights"].items()},
+            "intercept": float(w["intercept"]), "odds_ratio": {}, "p_values": dict.fromkeys(X.columns)}
 
 
 # ---------------------------------------------------------------- 3. 안정성

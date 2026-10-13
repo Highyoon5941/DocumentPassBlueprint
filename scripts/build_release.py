@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
 
 INCLUDE_DIRS = ["src", "prompts", "config", "scripts", "windows", "docs"]
-INCLUDE_FILES = ["requirements.txt", "environment.yml", "pyproject.toml", ".env.example", "CLAUDE.md"]
+INCLUDE_FILES = ["requirements.txt", "environment.yml", "pyproject.toml", ".env.example", "CLAUDE.md",
+                 "InputData/README.md"]          # 입력 폴더 안내문만 (문서·시트는 R3 로 차단)
 
 # R3: 절대 들어가면 안 되는 것 (들어가면 빌드를 실패시킨다)
 FORBIDDEN_NAMES = {".env"}
@@ -31,6 +32,7 @@ FORBIDDEN_PATTERNS = [
     re.compile(r"-sa\.json$"),
     re.compile(r"\.json\.key$"),
     re.compile(r"(^|/)(data|work|outputs|dist|logs)/"),
+    re.compile(r"(^|/)InputData/(?!README\.md$)"),   # 확정 입력 폴더 — 안내문 외 전부 금지
     re.compile(r"__pycache__|\.pyc$|\.ipynb_checkpoints|\.pytest_cache|\.ruff_cache"),
     re.compile(r"\.egg-info/|\.eggs/"),            # pip install -e . 가 남기는 빌드 산물
     re.compile(r"(^|/)credentials?\.json$"),
@@ -89,7 +91,7 @@ def main() -> int:
     a = ap.parse_args()
 
     v = version()
-    out = Path(a.out) if a.out else ROOT / "dist" / f"valeo_svmtrial_{v}.zip"
+    out = Path(a.out).resolve() if a.out else ROOT / "dist" / f"valeo_svmtrial_{v}.zip"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     files = collect()
@@ -134,7 +136,7 @@ def main() -> int:
         return 1
 
     size = out.stat().st_size / 1e6
-    print(f"\n[OK] {out.relative_to(ROOT)}  ({size:.1f} MB, 파일 {len(names)}개"
+    print(f"\n[OK] {out.relative_to(ROOT) if out.is_relative_to(ROOT) else out}  ({size:.1f} MB, 파일 {len(names)}개"
           + (f", wheel {n_wheels}개" if a.with_wheels else "") + ")")
     print("\n포함된 항목:")
     for d in INCLUDE_DIRS + INCLUDE_FILES:

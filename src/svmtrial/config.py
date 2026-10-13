@@ -42,10 +42,30 @@ def check_interpreter_hygiene() -> list[str]:
 
 
 class PathsCfg(BaseModel):
-    raw_pdfs: str = "data/raw/pdfs"
-    labels: str = "data/raw/labels"
+    raw_pdfs: str = "data/raw/pdfs"         # legacy 레이아웃 전용
+    labels: str = "data/raw/labels"         # legacy 레이아웃 전용
     work: str = "work"
     outputs: str = "outputs"
+
+
+class InputCfg(BaseModel):
+    """입력 레이아웃 (2026-10-14 사용자 확정).
+
+    inputdata (기본):
+        InputData/
+        ├─ Documents/*.pdf     파일명(확장자 제외) = Judgement 의 FileName
+        └─ Judgement.xlsx      FileName | Person1 | Person2 | … , 값 p / f / f(사유)
+        → 분석 그룹 1개 (고객사·문서종류 구분 없음)
+    legacy: SETUP.md §6·§7 의 data/raw/pdfs/<doc_type>/<customer>/ + data/raw/labels/*.xlsx
+    """
+
+    layout: str = "inputdata"               # inputdata | legacy
+    root: str = "InputData"                 # 절대경로도 된다
+    documents: str = "Documents"            # <root>/<documents>/ 아래 *.pdf (하위 폴더 포함)
+    judgement: str = "Judgement.xlsx"       # <root>/<judgement>
+    judgement_sheet: str = ""               # 비우면 첫 시트
+    file_column: str = "FileName"
+    doc_type: str = ""                      # 비우면 그룹 이름 InputData. 예: 대책서 → 섹션 seed 사용
 
 
 class LabelsCfg(BaseModel):
@@ -58,6 +78,7 @@ class IngestCfg(BaseModel):
     dpi: int = 150
     landscape_ratio: float = 1.25
     retry_dpi: int = 250
+    max_long_edge_px: int = 2400            # 페이지 크기가 제각각이어도 이미지 크기를 이 안으로 맞춘다
 
 
 class GeminiCfg(BaseModel):
@@ -128,6 +149,7 @@ class AnalysisCfg(BaseModel):
     method: str = "svm"            # svm | logistic | hierarchical
     objective: str = "decision_value"   # decision_value | all_pass_prob
     monotone: bool = False         # 존재 특징 계수 >= 0 제약
+    use_causes: bool = True        # Judgement 의 f(사유) → 개념(기준) 후보. 발견셋 사유만 쓴다
     target: str = "unanimous"
     pool_customers: bool = False
     split: SplitCfg = SplitCfg()
@@ -158,6 +180,7 @@ class Settings(BaseModel):
     project: str | None = None
     location: str = "global"
     paths: PathsCfg = PathsCfg()
+    input: InputCfg = InputCfg()
     labels: LabelsCfg = LabelsCfg()
     ingest: IngestCfg = IngestCfg()
     gemini: GeminiCfg = GeminiCfg()
@@ -171,6 +194,23 @@ class Settings(BaseModel):
     def p(self, which: str, *parts: str) -> Path:
         base = self.root / getattr(self.paths, which)
         return base.joinpath(*parts) if parts else base
+
+    @property
+    def inputdata(self) -> bool:
+        """확정 입력 레이아웃(InputData/Documents + Judgement.xlsx)인가."""
+        return (self.input.layout or "inputdata").strip().lower() == "inputdata"
+
+    @property
+    def input_root(self) -> Path:
+        return self.root / self.input.root
+
+    @property
+    def documents_dir(self) -> Path:
+        return self.input_root / self.input.documents
+
+    @property
+    def judgement_path(self) -> Path:
+        return self.input_root / self.input.judgement
 
     @property
     def work(self) -> Path:
@@ -246,6 +286,7 @@ def load_settings(root: Path | str | None = None, config_path: Path | str | None
         project=os.getenv("GOOGLE_CLOUD_PROJECT") or None,
         location=os.getenv("GOOGLE_CLOUD_LOCATION") or "global",
         paths=PathsCfg(**sec("paths")),
+        input=InputCfg(**sec("input")),
         labels=LabelsCfg(**sec("labels")),
         ingest=IngestCfg(**sec("ingest")),
         gemini=GeminiCfg(**sec("gemini")),
@@ -255,6 +296,8 @@ def load_settings(root: Path | str | None = None, config_path: Path | str | None
         template=TemplateCfg(**sec("template")),
         raw=raw,
     )
+    if s.input.layout.strip().lower() not in {"inputdata", "legacy"}:
+        raise RuntimeError(f"config 의 input.layout 값이 잘못됐습니다: {s.input.layout!r} (inputdata | legacy)")
     for msg in check_interpreter_hygiene():
         warnings.warn(msg, RuntimeWarning, stacklevel=2)
     return s

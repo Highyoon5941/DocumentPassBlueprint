@@ -15,6 +15,7 @@
 | section_taxonomy.v1   | 8D seed + 관측 제목 토큰 매칭 | ⚠️ 한국어 동의어 일반화 약함 |
 | section_map.v1        | 토큰 Jaccard 최대 매칭 | ⚠️ 동일 |
 | concept_discovery.v1  | Pass/Fail 문서빈도 차이가 큰 줄을 가설로 | ⚠️ 표현이 다양하면 약함 |
+| cause_criteria.v1     | 사유의 부정 꼬리말(미기입·누락·부적합…)을 떼고 대상이 같은 사유끼리 묶음 | ⚠️ 표현이 다르면 못 묶음 |
 | concept_merge.v1      | 정규화 문구 기준 중복 제거 | ✅ |
 | concept_scoring.v1    | 질문의 인용 문구를 개요 텍스트에서 부분일치 | ⚠️ 표현 변형에 약함 |
 | template_compose.v1   | 골격 + 등급 개념으로 문구 조립 | ✅ 문구가 기계적일 뿐 |
@@ -42,7 +43,7 @@ from svmtrial.textutil import best_section as _best_section
 FIXTURE_REL = "offline_fixtures/pages.json"
 
 # 스텁 규칙을 고칠 때 올린다. 캐시 키에 들어가므로, 규칙이 바뀌면 캐시가 자동 무효화된다.
-STUB_VERSION = "7"
+STUB_VERSION = "8"
 
 
 _TABLE_HINT = re.compile(r"(table|표|목록|list|matrix)", re.IGNORECASE)
@@ -255,6 +256,49 @@ class OfflineBackend:
                     "rationale": f"발견셋에서 Pass 문서 출현율이 Fail 보다 {diff:.0%} 높았다.",
                 }
             )
+        return {"concepts": concepts}
+
+    def _h_cause_criteria(self, *, data: dict, imgs: list, schema: type[BaseModel]) -> dict:
+        """평가자 사유 → 예/아니오 기준. 부정 꼬리말("미기입", "누락", "부적합" …)을 떼어 대상을 얻고,
+        대상이 같은 사유끼리 묶는다. 의미가 같아도 표현이 다르면 못 묶는다(LLM 경로에서는 묶인다)."""
+        tax = data.get("taxonomy", [])
+        prefix = str(data.get("id_prefix", "K"))
+        groups: dict[str, dict] = {}
+        for c in data.get("causes", []):
+            raw = str(c.get("cause", ""))
+            obj, quality = _cause_object(raw)
+            if not obj:
+                continue                                  # "누락" 처럼 대상이 없는 사유는 기준으로 못 바꾼다
+            g = groups.setdefault(tu.norm(obj), {"obj": obj, "quality": False, "refs": [], "n": 0, "docs": 0})
+            g["quality"] = g["quality"] or quality
+            for r in c.get("variants") or [raw]:
+                if r not in g["refs"]:
+                    g["refs"].append(str(r))
+            g["n"] += int(c.get("n_ratings", 1))
+            g["docs"] += int(c.get("n_docs", 1))
+
+        concepts = []
+        for i, g in enumerate(sorted(groups.values(), key=lambda x: (-x["n"], x["obj"])), start=1):
+            obj = g["obj"]
+            q = (f'"{obj}" 이(가) 요건에 맞게 들어 있는가?' if g["quality"]
+                 else f'"{obj}" 이(가) 기입되어 있는가?')
+            kind = (
+                "quantitative" if _CHART_HINT.search(obj)
+                else "format" if (_PHOTO_HINT.search(obj) or _SIGN_HINT.search(obj))
+                else "structure" if _TABLE_HINT.search(obj)
+                else "content_completeness"
+            )
+            sid = _best_section(obj, tax) if tax else "OTHER"
+            concepts.append({
+                "id": f"{prefix}{i:03d}",
+                "question": q,
+                "section_id": None if sid == "OTHER" else sid,
+                "type": kind,
+                "actionable": True,
+                "rationale": f"평가자 Fail 사유 {g['n']}건(문서 {g['docs']}건): " + ", ".join(g["refs"][:3]),
+                "source": "cause",
+                "cause_refs": g["refs"],
+            })
         return {"concepts": concepts}
 
     def _h_concept_merge(self, *, data: dict, imgs: list, schema: type[BaseModel]) -> dict:
@@ -483,6 +527,27 @@ def _lines_to_blocks(lines: list[str]) -> list[dict]:
         else:
             blocks.append({"type": "paragraph", "level": None, "text": _short(s, 160), "table": None})
     return blocks
+
+
+# 사유의 부정 꼬리말. 조사는 떼지 않는다 — "사이 누락" 의 "이" 를 조사로 오인한다.
+_NEG_TAIL = re.compile(
+    r"\s*"
+    r"(미기입|미기재|미작성|미입력|미표기|누락|없음|없다|부재|미첨부|미반영|미포함|미제출|미비"
+    r"|미흡|부족|불충분|부적합|부적절|불명확|불분명|오류|잘못됨|불량"
+    r"|missing|absent|lacking|not\s+\w+|insufficient|inappropriate|unclear)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_QUALITY_TAILS = {"미흡", "부족", "불충분", "부적합", "부적절", "불명확", "불분명", "오류", "잘못됨", "불량",
+                  "insufficient", "inappropriate", "unclear"}
+
+
+def _cause_object(cause: str) -> tuple[str, bool]:
+    """사유 → (대상, 품질 지적 여부). "향후 계획 미기입" → ("향후 계획", False), "사진 부적합" → ("사진", True)."""
+    s = re.sub(r"\s+", " ", tu.nfkc(cause)).strip()
+    m = _NEG_TAIL.search(s)
+    if not m:
+        return s, False
+    return s[: m.start()].strip(" :·-,"), m.group(1).lower() in _QUALITY_TAILS
 
 
 def _guess_columns(s: str) -> list[str]:

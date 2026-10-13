@@ -18,6 +18,25 @@
 | `docs/1007_night_alternatives.md` | SVM 외 대안과 **로지스틱 구현 방향 3단계**, Claude 백엔드 전환 스케치 |
 | `docs/autonomous_pipeline.md` | **자율 기준 선정 + 로지스틱 + 형식 자유 출력.** 사람 의견 배제, LayoutSpec, 목적함수 최적화 |
 | `docs/claude_backend_guide.md` | **Claude 백엔드 적용 방법.** 설치→인증→데이터 배치→비용 산정→소규모 검증→전체 실행→문제 해결 |
+| `docs/1014_inputdata.md` | **확정 입력 반영 (2026-10-14).** InputData 구조, Judgement `f(사유)` → 기준(차원), 이미지 기반 통일, 검증·미결 사항 |
+| `docs/visualization_options.md` | **시각화 방안 목록.** 정답 경계·문서 간 관계 8가지 + 미리보기(`scripts/viz_gallery.py`). 리포트 통합은 사용자 선택 대기 |
+
+## 입력 (2026-10-14 사용자 확정)
+```
+InputData/
+├─ Documents/*.pdf      파일명(확장자 제외) = FileName. 하위 폴더도 읽는다
+└─ Judgement.xlsx       FileName | Person1 | Person2 | …   값: p / f / f(사유)
+```
+- `config.input.layout: inputdata` 가 기본. SETUP.md 원래 구조는 `layout: legacy` (더미·샘플·검증 스크립트가 사용)
+- **문서 종류는 한 번에 하나로 통일한다** (대책서면 대책서만 — 사용자 확인). 그래서 Documents 전체가 단일 그룹이다.
+  종류를 `input.doc_type` 에 적으면 그룹 이름이 되고, 대책서면 8D seed 를 쓴다(자율 모드 제외)
+- **모든 PDF 를 먼저 페이지 이미지로 바꾸고 이후는 이미지로만 판단한다** (형식 판정 포함). 텍스트 레이어·PDF 메타는 참고값
+- Judgement 의 평가자 열은 **값으로 판별**한다 — 메모 칸·빈 열·`..` 열/행은 자동 제외하고 리포트에 기록
+- `f(사유)` 의 사유 → S3 사유 표(`causes_long.csv`) → S4b **기준 후보 K…** (발견셋 사유만, 🔒 유지) → S4c 사유-채점 일치율.
+  끄려면 `analysis.use_causes: false`. **사유 문구의 LLM 전송은 사용자 승인됨** — 평가자 이름·문서명은 보내지 않는다
+- 시각화: **plotly·matplotlib 모두 사용 승인됨** (plotly 추가 시 R5 의 Windows wheel 확인은 여전히 한다).
+  후보 8종은 `scripts/viz_gallery.py` / `docs/visualization_options.md`. 리포트 통합은 방안 선택 대기
+- `InputData/` 는 README.md 만 git 추적 (R3). 배포 zip 에도 README 만 들어간다
 
 ## 이 저장소의 환경
 - conda 환경 이름: **`Valeo_SVM_Trial`** (SETUP.md §5.2의 `valeo_svm`에서 변경. 사용자 지시)
@@ -57,7 +76,14 @@
 | 6 S5 model/counterfactual | 완료 |
 | 7 S6 template + S7 diagnose | 완료 |
 | 8 Windows 배포 | 완료 (zip 빌드까지. Windows PC 실행 검증은 사람이 수행) |
-| 9 실데이터 | 미착수 — `SVMTRIAL_BACKEND=vertex` 전환 후 사람이 수행 |
+| 9 실데이터 | 미착수 — `SVMTRIAL_BACKEND=claude`(권장) 또는 `vertex` 전환 후 사람이 수행. **입력 구조는 확정(InputData)** |
+
+검증 상태 (2026-10-14, 확정 입력 형식 — offline + `data/dummy_input` PDF 60건 × 평가자 4명):
+- `run_tests.sh` → **221 passed** (+38: Judgement 판독·사유·이미지 기반·사유 기준·회귀)
+- 숨김 규칙 3개 → K001 `확정`, K002·K003 `유력` / 잡음 2개 `기각` / 순열검정 p=0.002 / 사유-채점 일치율 97%
+- legacy 회귀 없음: `verify_dummy.py -g 대책서__CUST_A` 합격
+- 기존 버그 수정: `method: svm`(기본)에서 `all` 이 S5+ objective.json 저장 중 죽던 문제 (numpy.bool, 5b4fa10 에서 유입)
+- 주의: 이 PC 의 비대화형 셸에는 `conda` 가 PATH 에 없을 수 있다 → `~/anaconda3/envs/Valeo_SVM_Trial/bin/python -m pytest` (PYTHONPATH 비우고)
 
 검증 상태 (2026-10-05, offline 백엔드 + 더미 데이터 PDF 80건/평가 400행):
 - `python scripts/smoke_test.py` → ALL SMOKE TESTS PASSED
@@ -87,6 +113,11 @@
 | — | `doctor`, `approve` CLI 명령 추가 | 환경 점검과 🔒 관문의 **명시적** 통과 (R7) |
 | — | `scripts/verify_dummy.py`, `scripts/run_tests.sh` 추가 | Phase 6 자동 검증 / `PYTHONPATH` 오염 회피 |
 | — | 프롬프트에 기계판독 데이터 블록(`payload.py`) | 두 백엔드가 같은 입력을 쓰게 해 호출부가 갈라지지 않게 한다 |
+| §6·§7.1 `data/raw/pdfs/<doc_type>/<customer>/` + `data/raw/labels/` | **`InputData/Documents/*.pdf` + `InputData/Judgement.xlsx`** (legacy 는 `input.layout: legacy`) | 사용자 확정 입력 (2026-10-14) |
+| §7.2 long/wide (`doc_id`·`rater`·`result`) | Judgement wide: `FileName` + 평가자 열(값으로 판별), 값 `p`/`f`/`f(사유)` | 사용자 확정 입력 |
+| §7.3 그룹 = (doc_type, customer) | InputData 는 **단일 그룹** (`input.doc_type` 으로 이름·seed 지정 가능) | 입력에 고객사·문서종류 정보가 없다 |
+| §8.1 형식 판정 1단계 creator/producer | 쓰지 않음(참고값 `creator_hint`). 페이지 **이미지** 비율 → 애매하면 비전 판정 | 사용자 지시: 모든 PDF 를 이미지 기반으로 통일 |
+| §2.2 "사유는 없다" / §8.4 S4b 가설만 | 평가자 Fail 사유 → 기준 후보(K…) 추가. 발견셋 사유만 쓰고 🔒 관문 유지 | 입력에 사유가 생겼다. 누수 방지 규칙은 그대로 |
 
 ## 이 PC 의 함정
 `PYTHONPATH` 에 ROS Humble 의 **python3.10** 경로가 들어 있다. python3.11 환경에서 import 되면 깨진다.

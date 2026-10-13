@@ -159,3 +159,42 @@ class TemplateSpec(BaseModel):
     caveats: list[str] = []
     evidence: list[Evidence] = []
     meta: dict = {}                       # run_id, 모델 ID, 프롬프트 버전, 생성시각
+
+
+# ---------------------------------------------------------------- 레이아웃 (출력 형식 자유화)
+
+LayoutKind = Literal[
+    "title", "heading", "paragraph", "guidance", "table",
+    "figure_placeholder", "signature", "checklist", "field", "divider",
+]
+
+
+class LayoutBlock(BaseModel):
+    """페이지 위의 한 덩어리. **문서 종류에 대한 가정이 없다** — 종류와 좌표만 있다.
+
+    렌더러는 `kind` 와 `rect` 만 보고 그린다. 표지가 무엇인지, 서명란이 어디 있어야
+    하는지 같은 지식은 렌더러가 아니라 이 명세가 가진다.
+    """
+
+    kind: LayoutKind
+    rect: list[float] = Field(description="[x0, y0, x1, y1] (pt). 페이지 좌상단 기준")
+    text: str = ""
+    font_size: float = 10.5
+    bold: bool = False
+    columns: list[str] | None = None        # kind == "table"
+    n_rows: int = 3                         # kind == "table"
+    items: list[str] | None = None          # kind == "checklist"
+    evidence_ids: list[str] = []
+
+
+class LayoutPage(BaseModel):
+    width: float = 595.0                    # A4 세로 기본. 슬라이드면 호출부가 바꾼다
+    height: float = 842.0
+    blocks: list[LayoutBlock]
+
+
+class LayoutSpec(BaseModel):
+    """템플릿의 시각적 배치. TemplateSpec(무엇을) 과 짝을 이룬다(어떻게 배치할지)."""
+
+    pages: list[LayoutPage]
+    rationale: str = ""                     # 왜 이 배치인지 (관측 기하 근거)

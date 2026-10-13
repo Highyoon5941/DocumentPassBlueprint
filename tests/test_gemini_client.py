@@ -142,22 +142,42 @@ def test_retryable_classification(msg, expected):
 
 
 def test_all_prompts_render(settings):
-    """모든 프롬프트가 Jinja2 로 렌더링되어야 한다 (변수 누락 조기 발견)."""
-    vars_by_prompt = {
-        "ocr_page.v1": {"data_block": "{}"},
-        "doc_format.v1": {"data_block": "{}"},
-        "section_taxonomy.v1": {"data_block": "{}"},
-        "section_map.v1": {"data_block": "{}"},
-        "concept_discovery.v1": {"data_block": "{}", "max_hypotheses": 15, "id_prefix": "C"},
-        "concept_merge.v1": {"data_block": "{}", "min_keep": 30, "max_keep": 60},
-        "concept_scoring.v1": {"data_block": "{}"},
-        "template_compose.v1": {"data_block": "{}"},
-    }
-    for pid, v in vars_by_prompt.items():
-        text = load_prompt(settings, pid, **v)
-        assert len(text) > 100, pid
-        assert "{{" not in text, f"{pid}: 치환되지 않은 변수가 남았다"
-    assert len(prompt_versions(settings)) == len(vars_by_prompt)
+    """프롬프트 디렉토리의 **모든** 파일이 렌더링되어야 한다 (변수 누락 조기 발견).
+
+    고정 목록이 아니라 디렉토리를 스캔한다 — 프롬프트를 추가하면 자동으로 포함된다.
+    """
+    common = {"data_block": "{}", "max_hypotheses": 15, "id_prefix": "C",
+              "min_keep": 30, "max_keep": 60}
+    files = sorted(settings.prompts_dir.glob("*.md"))
+    assert files, "프롬프트 파일이 없다"
+    for f in files:
+        text = load_prompt(settings, f.stem, **common)
+        assert len(text) > 100, f.stem
+        assert "{{" not in text, f"{f.stem}: 치환되지 않은 변수가 남았다"
+    assert len(prompt_versions(settings)) == len(files)
+
+
+def test_prompt_v2_variants_are_domain_neutral(settings):
+    """자율 모드 v2 프롬프트에는 특정 도메인 용어가 없어야 한다.
+
+    v1 은 '5Why' 같은 실제 기법 이름을 예시로 들어 LLM 을 그쪽으로 유도한다.
+    자율 모드의 전제(사람 의견 배제)를 지키려면 v2 에는 그런 용어가 없어야 한다.
+    """
+    banned = ["5why", "5-why", "수평전개", "근본원인", "8d", "효과검증", "5w2h"]
+    for stem in ("concept_discovery.v2", "concept_scoring.v2", "section_taxonomy.v2"):
+        text = load_prompt(settings, stem, data_block="{}", max_hypotheses=15,
+                           id_prefix="C", min_keep=30, max_keep=60).lower()
+        hits = [b for b in banned if b in text]
+        assert not hits, f"{stem} 에 도메인 용어가 남아 있다: {hits}"
+
+
+def test_prompt_version_switches_with_autonomous(settings):
+    from svmtrial.sections import prompt_version
+
+    settings.analysis.autonomous = False
+    assert prompt_version(settings, "concept_discovery") == "concept_discovery.v1"
+    settings.analysis.autonomous = True
+    assert prompt_version(settings, "concept_discovery") == "concept_discovery.v2"
 
 
 def test_missing_prompt_raises(settings):

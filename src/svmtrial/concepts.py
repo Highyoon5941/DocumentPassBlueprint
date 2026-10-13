@@ -21,7 +21,7 @@ from svmtrial.groups import Group, work_dir
 from svmtrial.ocr import load_outline
 from svmtrial.payload import wrap
 from svmtrial.schemas import Concept, ConceptAnswers, ConceptCandidates
-from svmtrial.sections import GateNotPassed
+from svmtrial.sections import GateNotPassed, prompt_version
 
 CANDIDATES = "concepts_candidates.yaml"
 APPROVED = "concepts_approved.yaml"
@@ -111,7 +111,7 @@ def discover(
         ps = rng.sample(pass_ids, min(k, len(pass_ids)))
         fs = rng.sample(fail_ids, min(k, len(fail_ids)))
         prompt = load_prompt(
-            s, "concept_discovery.v1",
+            s, prompt_version(s, "concept_discovery"),
             max_hypotheses=s.analysis.discovery.max_hypotheses,
             id_prefix="C",
             data_block=wrap({
@@ -127,7 +127,7 @@ def discover(
         )
         try:
             res = gc.generate_json(
-                model=s.model_for("pro"), prompt_id="concept_discovery.v1",
+                model=s.model_for("pro"), prompt_id=prompt_version(s, "concept_discovery"),
                 parts=[P.text(prompt)], schema=ConceptCandidates,
                 cache_key_extra=f"{g.safe}:r{r}",
             )
@@ -167,6 +167,10 @@ def discover(
         "concepts": [c.model_dump() for c in merged.concepts],
     }
     cand.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    if s.analysis.autonomous:
+        payload["_autonomous_auto_approved"] = True
+        (wd / APPROVED).write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return payload
 
 
@@ -224,7 +228,7 @@ def score_doc(
     pages_payload = [{"page": p["page"], "text": p["text"]} for p in o.get("pages", [])]
     for chunk in iter_chunks(order, s.analysis.concepts_per_scoring_call):
         prompt = load_prompt(
-            s, "concept_scoring.v1",
+            s, prompt_version(s, "concept_scoring"),
             data_block=wrap({
                 "group": g.key,
                 "doc_id": doc_id,
@@ -237,7 +241,7 @@ def score_doc(
         )
         try:
             res = gc.generate_json(
-                model=s.model_for("fast"), prompt_id="concept_scoring.v1",
+                model=s.model_for("fast"), prompt_id=prompt_version(s, "concept_scoring"),
                 parts=[P.text(prompt), *img_parts], schema=ConceptAnswers,
                 cache_key_extra=f"{doc_id}:{shuffle_seed or 0}:{','.join(c.id for c in chunk)}",
             )

@@ -28,6 +28,11 @@ CANDIDATES = "taxonomy_candidates.yaml"
 APPROVED = "taxonomy_approved.yaml"
 
 
+def prompt_version(s: Settings, base: str) -> str:
+    """자율 모드에서는 도메인 용어를 뺀 v2 프롬프트를 쓴다."""
+    return f"{base}.v2" if s.analysis.autonomous else f"{base}.v1"
+
+
 class GateNotPassed(RuntimeError):
     """🔒 사람 검토 관문이 통과되지 않았다 (R7)."""
 
@@ -62,9 +67,9 @@ def propose_taxonomy(s: Settings, g: Group, gc: GeminiClient, doc_ids: list[str]
     if cand.exists() and not force:
         return yaml.safe_load(cand.read_text(encoding="utf-8"))
 
-    seed = seed_for(g.doc_type)
+    seed = seed_for(g.doc_type, s.analysis.autonomous)
     prompt = load_prompt(
-        s, "section_taxonomy.v1",
+        s, prompt_version(s, "section_taxonomy"),
         data_block=wrap({
             "group": g.key,
             "doc_type": g.doc_type,
@@ -76,7 +81,7 @@ def propose_taxonomy(s: Settings, g: Group, gc: GeminiClient, doc_ids: list[str]
     )
     try:
         tax = gc.generate_json(
-            model=s.model_for("pro"), prompt_id="section_taxonomy.v1",
+            model=s.model_for("pro"), prompt_id=prompt_version(s, "section_taxonomy"),
             parts=[P.text(prompt)], schema=SectionTaxonomy, cache_key_extra=g.safe,
         )
     except DryRunHit:
@@ -95,6 +100,11 @@ def propose_taxonomy(s: Settings, g: Group, gc: GeminiClient, doc_ids: list[str]
         "items": [i.model_dump() for i in tax.items],
     }
     cand.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    if s.analysis.autonomous:
+        # 🔒 R7 을 명시적으로 끈 모드. 사람 의견을 넣지 않기 위한 선택이며 리포트에 기록된다.
+        payload["_autonomous_auto_approved"] = True
+        (wd / APPROVED).write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return payload
 
 

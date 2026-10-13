@@ -25,6 +25,12 @@ SEED_8D: list[dict[str, Any]] = [
 SEEDS: dict[str, list[dict[str, Any]]] = {"대책서": SEED_8D}
 
 
-def seed_for(doc_type: str) -> list[dict[str, Any]]:
-    """문서 종류의 seed. 없으면 빈 목록(= 데이터에서만 분류체계를 만든다)."""
+def seed_for(doc_type: str, autonomous: bool = False) -> list[dict[str, Any]]:
+    """문서 종류의 seed. 없으면 빈 목록(= 데이터에서만 분류체계를 만든다).
+
+    autonomous=True 면 등록된 seed 가 있어도 쓰지 않는다. seed 는 사람이 넣은
+    도메인 지식이므로, 자율 모드에서는 분류체계도 입력 데이터에서만 유도해야 한다.
+    """
+    if autonomous:
+        return []
     return [dict(x) for x in SEEDS.get(doc_type, [])]

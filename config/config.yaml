@@ -32,6 +32,11 @@ claude:
 ocr:
   min_legibility: 0.5
 analysis:
+  # --- 자율 모드 / 모델 / 목적함수 ---
+  autonomous: false          # true 면 seed 미사용 + 🔒 자동통과 + 도메인 중립 v2 프롬프트 (R7 off)
+  method: svm                # svm | logistic | hierarchical
+  objective: decision_value  # decision_value | all_pass_prob
+  monotone: false            # 존재 특징 계수 >= 0 제약
   target: unanimous               # unanimous | majority | ratio | ds
   pool_customers: false
   split: {discovery: 0.6, seed: 42}
@@ -53,3 +58,5 @@ template:
   section_min_presence: 0.7
   font: 맑은 고딕
   pptx_size: 16x9
+  output: both               # image | docx | both — LayoutSpec 을 공통 원천으로
+  preview_dpi: 150

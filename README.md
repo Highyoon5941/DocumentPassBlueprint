@@ -167,6 +167,7 @@ S1/S3 검증 결과와 채점 기준 대조표는 [`docs/Runbook.md` §4bis](doc
 | [`docs/1007.md`](docs/1007.md) | 2026-10-07 검토일지 — 측정값 모음, 재현 명령, 정정 사항, 미결 과제 |
 | [`docs/1007_night_SVM.md`](docs/1007_night_SVM.md) | **구현보고서** — 학습 없이 SVM을 쓰는 방식, 문서종류 불변성 실증 |
 | [`docs/1007_night_alternatives.md`](docs/1007_night_alternatives.md) | SVM 외 대안, 로지스틱 구현 방향, Claude 전환 |
+| [`docs/autonomous_pipeline.md`](docs/autonomous_pipeline.md) | **자율 기준 선정 + 로지스틱 + 형식 자유 출력** — 사람 의견 배제, LayoutSpec, 예산별 최적 조합 |
 | [`docs/claude_backend_guide.md`](docs/claude_backend_guide.md) | **Claude 백엔드 적용 방법** — 설치·인증·비용 산정·소규모 검증·문제 해결 |
 | [`CLAUDE.md`](CLAUDE.md) | 작업 규칙, 현재 Phase, 설계 기준과 달라진 점 |
 

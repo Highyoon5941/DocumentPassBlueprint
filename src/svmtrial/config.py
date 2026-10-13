@@ -119,6 +119,15 @@ class UnanimousGuard(BaseModel):
 
 
 class AnalysisCfg(BaseModel):
+    # --- 자율 모드 ---
+    # true 이면 사람의 도메인 의견을 일절 넣지 않는다:
+    #   · 섹션 seed 를 쓰지 않는다 (분류체계를 데이터에서만 유도)
+    #   · 🔒 관문을 자동 통과한다 (SETUP.md R7 을 명시적으로 끄는 선택 — 리포트에 기록된다)
+    #   · 도메인 용어가 없는 v2 프롬프트를 쓴다
+    autonomous: bool = False
+    method: str = "svm"            # svm | logistic | hierarchical
+    objective: str = "decision_value"   # decision_value | all_pass_prob
+    monotone: bool = False         # 존재 특징 계수 >= 0 제약
     target: str = "unanimous"
     pool_customers: bool = False
     split: SplitCfg = SplitCfg()
@@ -139,6 +148,8 @@ class TemplateCfg(BaseModel):
     section_min_presence: float = 0.7
     font: str = "맑은 고딕"
     pptx_size: str = "16x9"
+    output: str = "both"        # image | docx | both — LayoutSpec 을 공통 원천으로 쓴다
+    preview_dpi: int = 150
 
 
 class Settings(BaseModel):

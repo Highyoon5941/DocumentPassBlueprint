@@ -202,6 +202,196 @@ def fit_svm_weights(s: Settings, X: pd.DataFrame, y: pd.Series, model_name: str 
             "C": C, "model": model_name}
 
 
+# ---------------------------------------------------------------- 로지스틱 계열 (SVM 대체)
+
+
+def fit_logistic(s: Settings, X: pd.DataFrame, y: pd.Series, l2: float = 0.0) -> dict:
+    """기본 로지스틱. SVM 과 같은 입력을 받고 **확률**을 돌려준다.
+
+    목표가 "Pass 확률이 높은 가이드라인"이므로 결정값만 주는 SVM 보다 맞는다.
+
+    기본은 벌점 없는 최대우도(MLE)다. statsmodels 의 `fit_regularized` 는 로그우도를
+    표본 수로 나눈 뒤 alpha 를 곱하므로, alpha=1 같은 값은 소표본에서 계수를 0 으로
+    뭉개버린다. 그래서 **완전분리/비수렴일 때만** 약한 벌점으로 되돌아간다.
+    """
+    import statsmodels.api as sm
+    from statsmodels.tools.sm_exceptions import PerfectSeparationError
+
+    names = ["_intercept", *X.columns]
+    Xd = sm.add_constant(X.to_numpy(float), has_constant="add")
+    yv = y.to_numpy(float)
+
+    def _mle():
+        r = sm.GLM(yv, Xd, family=sm.families.Binomial()).fit()
+        return np.asarray(r.params, float), np.asarray(r.pvalues, float), "mle", 0.0
+
+    def _ridge(alpha: float):
+        r = sm.GLM(yv, Xd, family=sm.families.Binomial()).fit_regularized(alpha=alpha, L1_wt=0.0)
+        return np.asarray(r.params, float), np.full(len(names), np.nan), "ridge", alpha
+
+    if l2 and l2 > 0:
+        params, pvals, how, used = _ridge(l2)
+    else:
+        try:
+            params, pvals, how, used = _mle()
+            # 완전분리 징후: 계수가 비정상적으로 큼 → 약한 벌점으로 되돌린다
+            if not np.all(np.isfinite(params)) or np.max(np.abs(params[1:])) > 25:
+                params, pvals, how, used = _ridge(0.01)
+        except (PerfectSeparationError, ValueError, np.linalg.LinAlgError):
+            params, pvals, how, used = _ridge(0.01)
+
+    coef = dict(zip(names, params, strict=False))
+    pv = dict(zip(names, pvals, strict=False))
+    return {
+        "kind": "logistic",
+        "fit": how,
+        "l2": used,
+        "weights": {k: float(v) for k, v in coef.items() if k != "_intercept"},
+        "intercept": float(coef["_intercept"]),
+        "odds_ratio": {k: float(np.exp(np.clip(v, -30, 30))) for k, v in coef.items() if k != "_intercept"},
+        "p_values": {k: (None if v != v else float(v)) for k, v in pv.items() if k != "_intercept"},
+    }
+
+
+def fit_monotone_logistic(X: pd.DataFrame, y: pd.Series, nonneg_cols: set[str], l2: float = 0.01) -> dict:
+    """존재 특징의 계수를 >= 0 으로 제약한다.
+
+    "요소를 추가하는 것이 해를 끼치지 않는다"는 도메인 지식을 제약으로 넣으면,
+    템플릿이 '이 섹션을 빼라' 같은 말을 구조적으로 못 하게 된다.
+    """
+    from scipy.optimize import minimize
+
+    cols = list(X.columns)
+    Xm = np.c_[np.ones(len(X)), X.to_numpy(float)]
+    yv = y.to_numpy(float)
+    lo = [-np.inf] + [0.0 if c in nonneg_cols else -np.inf for c in cols]
+    hi = [np.inf] * Xm.shape[1]
+
+    def nll(w: np.ndarray) -> float:
+        z = Xm @ w
+        return float(np.logaddexp(0, z).sum() - (yv @ z) + l2 * (w[1:] ** 2).sum())
+
+    r = minimize(nll, np.zeros(Xm.shape[1]), method="L-BFGS-B",
+                 bounds=list(zip(lo, hi, strict=False)))
+    coef = dict(zip(["_intercept", *cols], r.x, strict=False))
+    return {
+        "kind": "monotone_logistic",
+        "weights": {k: float(v) for k, v in coef.items() if k != "_intercept"},
+        "intercept": float(coef["_intercept"]),
+        "odds_ratio": {k: float(np.exp(v)) for k, v in coef.items() if k != "_intercept"},
+        "p_values": dict.fromkeys(cols, None),
+        "converged": bool(r.success),
+        "n_constrained": len(nonneg_cols & set(cols)),
+    }
+
+
+def fit_hierarchical(
+    s: Settings, long: pd.DataFrame, X: pd.DataFrame, feature_cols: list[str],
+    rater_interactions: tuple[str, ...] = (),
+) -> dict:
+    """평가자 수준 계층 로지스틱.
+
+    문서 단위로 이진화하면 평가자 판정 N×R 건이 N 건으로 압축된다. 그 손실을 없애고,
+    평가자 개인차(엄격도)와 평가자×특징 상호작용까지 모형에 넣는다.
+    """
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+
+    # long 에 특징 열이 이미 섞여 있어도 안전하도록 필요한 열만 뽑아 병합한다
+    # (안 그러면 why5_x / why5_y 같은 접미사가 붙어 수식이 깨진다)
+    need = ["doc_id", "rater", "y"]
+    missing = [c for c in need if c not in long.columns]
+    if missing:
+        raise RuntimeError(f"계층 모형: long 테이블에 {missing} 열이 없습니다.")
+    d = long[need].copy()
+    d["doc_id"] = d["doc_id"].astype(str)
+    Xr = X.reset_index()
+    Xr["doc_id"] = Xr["doc_id"].astype(str)
+    d = d.merge(Xr, on="doc_id", how="inner").dropna(subset=["y"])
+    if d.empty or d["y"].nunique() < 2:
+        raise RuntimeError("계층 모형: 평가자 수준 데이터가 부족하거나 라벨이 한쪽뿐입니다.")
+    d["rater"] = d["rater"].astype(str)
+    d["y"] = d["y"].astype(float)
+    for c in feature_cols:
+        d[c] = d[c].astype(float)
+
+    raters = sorted(d["rater"].unique())
+    terms = " + ".join(f"Q('{c}')" for c in feature_cols)
+    f = f"y ~ {terms} + C(rater)"
+    # 상호작용은 **기준 평가자를 빼고** 넣는다.
+    # 전원을 넣으면 Σ_r is_r = 1 이라 주효과 Q('c') 와 완전공선이 되어
+    # 설계행렬이 rank-deficient 가 되고 계수가 유일하게 정해지지 않는다.
+    # C(rater) 가 첫 평가자를 절편에 흡수하므로 상호작용도 같은 기준을 쓴다.
+    ref = raters[0] if raters else None
+    for c in rater_interactions:
+        if c not in feature_cols:
+            continue
+        for r in raters:
+            if r == ref:
+                continue                      # 기준 평가자 = 주효과가 그 역할을 한다
+            col = f"is_{_safe(r)}"
+            d[col] = (d["rater"] == r).astype(int)
+            f += f" + {col}:Q('{c}')"
+
+    res = smf.glm(f, data=d, family=sm.families.Binomial()).fit()
+    raw = {str(k): float(v) for k, v in res.params.items()}
+    pv = {str(k): (None if v != v else float(v)) for k, v in res.pvalues.items()}
+    # Q('name') 표기를 원래 특징 이름으로 되돌린다
+    weights = {c: raw.get(f"Q('{c}')", 0.0) for c in feature_cols}
+    p_values = {c: pv.get(f"Q('{c}')") for c in feature_cols}
+    rater_effect = {r: raw.get(f"C(rater)[T.{r}]", 0.0) for r in raters}
+    interactions = {k: v for k, v in raw.items() if ":" in k}
+    return {
+        "kind": "hierarchical",
+        "weights": weights,
+        "intercept": raw.get("Intercept", 0.0),
+        "odds_ratio": {c: float(np.exp(v)) for c, v in weights.items()},
+        "p_values": p_values,
+        "rater_effect": rater_effect,
+        "rater_interactions": {k: float(v) for k, v in interactions.items()},
+        "interaction_p": {k: pv.get(k) for k in interactions},
+        "raters": raters,
+        "reference_rater": ref,
+        "n_obs": int(len(d)),
+        "n_params": int(len(raw)),
+        "_formula": f,
+    }
+
+
+def _safe(name: str) -> str:
+    """평가자 이름을 수식에 쓸 수 있는 식별자로."""
+    import re as _re
+
+    return _re.sub(r"\W+", "_", str(name))
+
+
+def fit_primary(
+    s: Settings, X: pd.DataFrame, y: pd.Series, long: pd.DataFrame | None = None,
+    concept_cols: list[str] | None = None,
+) -> dict:
+    """config.analysis.method 에 따라 주 모델을 적합한다. 반환 형태는 공통이다.
+
+    어떤 방법이든 **매 실행마다 주어진 배치로 적합하고 저장하지 않는다**(무상태).
+    """
+    method = (s.analysis.method or "svm").lower()
+    nonneg = {c for c in X.columns if is_binary(X[c])} if s.analysis.monotone else set()
+
+    if method == "hierarchical" and long is not None:
+        inter = tuple(concept_cols or [])
+        try:
+            return fit_hierarchical(s, long, X, list(X.columns), rater_interactions=inter)
+        except (RuntimeError, ValueError, np.linalg.LinAlgError) as e:
+            out = fit_logistic(s, X, y)
+            out["fallback_from"] = f"hierarchical ({type(e).__name__}: {str(e)[:80]})"
+            return out
+    if method == "logistic":
+        return (fit_monotone_logistic(X, y, nonneg) if s.analysis.monotone
+                else fit_logistic(s, X, y))
+    w = fit_svm_weights(s, X, y, "svm_C0.1")
+    return {"kind": "svm", "weights": w["weights"], "intercept": w["intercept"],
+            "odds_ratio": {}, "p_values": dict.fromkeys(X.columns)}
+
+
 # ---------------------------------------------------------------- 3. 안정성
 
 

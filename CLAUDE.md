@@ -16,6 +16,7 @@
 | `docs/1007.md` | 2026-10-07 검토일지 — 대안 문서 2종 작성, L1 학습 비용/역할 분리 Q&A, **정정 3건(C1~C3)**, 미결 사항 |
 | `docs/1007_night_SVM.md` | **구현보고서(브랜치 `SVM`).** 학습 없는 SVM 활용 — 무상태 보증, 문서종류 불변성 실증(요구사양서), 발견·수정한 버그 3건 |
 | `docs/1007_night_alternatives.md` | SVM 외 대안과 **로지스틱 구현 방향 3단계**, Claude 백엔드 전환 스케치 |
+| `docs/autonomous_pipeline.md` | **자율 기준 선정 + 로지스틱 + 형식 자유 출력.** 사람 의견 배제, LayoutSpec, 목적함수 최적화 |
 | `docs/claude_backend_guide.md` | **Claude 백엔드 적용 방법.** 설치→인증→데이터 배치→비용 산정→소규모 검증→전체 실행→문제 해결 |
 
 ## 이 저장소의 환경
@@ -35,6 +36,14 @@
 전환 절차와 사람이 직접 받아와야 하는 값은 **`docs/migration_vertexAI.md`**에 있다.
 `offline` 백엔드는 OCR 단계에서 `make_dummy_data.py`가 만든 fixture에 의존하므로 **실데이터에는 쓸 수 없다.**
 실데이터는 `claude`(권장) 또는 `vertex` 로 전환한다.
+
+## 자율 모드 (R7 off — 사용자 승인됨)
+`analysis.autonomous: true` 는 **사람의 도메인 의견을 일절 넣지 않는 모드**다.
+- `seeds.py` 의 섹션 seed 를 쓰지 않는다 (분류체계를 데이터에서만 유도)
+- 🔒 섹션·개념 관문을 자동 통과한다 — **SETUP.md R7 을 명시적으로 끈 것**. 기본값은 `false`
+- 도메인 용어가 없는 `*.v2` 프롬프트를 쓴다 (`prompt_version()`)
+- 승인 파일에 `_autonomous_auto_approved: true` 가 남아 사후 구분이 된다
+자세한 내용과 검증 결과: `docs/autonomous_pipeline.md`
 
 ## 현재 Phase
 | Phase | 상태 |

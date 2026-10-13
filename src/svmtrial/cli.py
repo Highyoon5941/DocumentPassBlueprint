@@ -61,6 +61,9 @@ def _client(s: Settings, run_id: str, dry_run: bool = False, force: bool = False
     gc = GeminiClient(s, run_id=run_id, use_cache=not force, dry_run=dry_run)
     tag = "[yellow]offline (Gemini 호출 없음)[/yellow]" if s.backend == "offline" else f"[green]vertex ({s.project}/{s.location})[/green]"
     con.print(f"backend = {tag}   run_id = [cyan]{run_id}[/cyan]")
+    con.print(f"method = [cyan]{s.analysis.method}[/cyan]  objective = [cyan]{s.analysis.objective}[/cyan]"
+              f"  autonomous = [cyan]{s.analysis.autonomous}[/cyan]"
+              + ("  [yellow](🔒 관문 자동 통과 — R7 off)[/yellow]" if s.analysis.autonomous else ""))
     if s.backend == "offline":
         con.print("[yellow]  → 실데이터 분석에는 쓸 수 없습니다. docs/migration_vertexAI.md 를 보세요.[/yellow]")
     return gc
@@ -280,9 +283,9 @@ def model(group: GroupOpt = None, config: ConfigOpt = None) -> None:
     """S5 — 단변량 + 다변량 + 안정성 + 검증셋 + 등급 + 평가자별 + 반사실."""
     s = _settings(config)
     from svmtrial import concepts as cmod
-    from svmtrial import counterfactual as cfmod
     from svmtrial import labels as lmod
     from svmtrial import modeling as mod
+    from svmtrial import objective as objmod
 
     for g in _groups(s, group):
         tcol = _target_col(s, g)
@@ -317,16 +320,27 @@ def model(group: GroupOpt = None, config: ConfigOpt = None) -> None:
             for c in res["per_rater"]["conflicts"]:
                 con.print(f"  - {c}")
 
-        # 반사실
+        # 목적함수 최적화 (로지스틱 계열이면 확률, SVM 이면 결정값)
         if not res["continuous_target"]:
             Xi, y, _ = mod.prepare(X, lmod.load_targets(s, g), tcol, meta.get("unstable_concepts"))
-            fit = mod.fit_svm_weights(s, Xi, y, mv.get("primary_model", "svm_C0.1"))
-            cf = cfmod.run(s, g, Xi, y, fit["weights"], fit["intercept"], cmod.load_approved_concepts(s, g))
-            _show(f"counterfactual — {g.key}", {
-                "Fail 문서": cf["n_fail_docs"], "Pass 쪽 도달": cf["n_reached_pass_side"],
-                "평균 변경 수": cf["mean_changes_needed"],
-                "상위 보완": [f"{r['action']}:{r['feature']}({r['share_of_fail']:.0%})" for r in cf["ranking"][:5]],
+            concepts = cmod.load_approved_concepts(s, g)
+            fit = mod.fit_primary(s, Xi, y, long=lmod.load_long(s, g),
+                                  concept_cols=[c.id for c in concepts if c.id in Xi.columns])
+            obj = objmod.run(s, g, fit, Xi, y, concepts)
+            _show(f"objective — {g.key}", {
+                "모델": fit["kind"] + (f" (폴백: {fit['fallback_from']})" if fit.get("fallback_from") else ""),
+                "목적함수": obj["objective_label"],
+                "탐색": obj["search"],
+                "최적": f"{obj['best']['k']}개 → {obj['best']['score']:.4f}",
+                "탐욕=최적": obj["greedy_is_optimal"],
+                "Fail 문서": obj["fail_docs"],
             })
+            t = Table(title="요소 수별 최적 조합", title_justify="left")
+            for c in ("개수", obj["objective_label"], "조합"):
+                t.add_column(c, overflow="fold")
+            for row in obj["budget_curve"]:
+                t.add_row(str(row["k"]), f"{row['score']:.4f}", ", ".join(row["elements"]) or "—")
+            con.print(t)
 
 
 @app.command()
@@ -375,12 +389,46 @@ def _build_outputs(s: Settings, gc: GeminiClient, run_id: str, groups: list[Grou
         (out_dir / "template_spec.json").write_text(spec.model_dump_json(indent=1), encoding="utf-8")
         rmod.spec_markdown(spec, out_dir / "template_spec.md")
 
-        if spec.doc_format == "slides":
-            doc = render_pptx.render(spec, out_dir / "template.pptx", font=s.template.font)
-        else:
-            doc = render_docx.render(spec, out_dir / "template.docx", font=s.template.font)
+        # --- 레이아웃: 관측 기하 + 명세 → LayoutSpec → 이미지/ docx (공통 원천)
+        made = {"template_spec.json": "✓", "template_spec.md": "✓"}
+        want = (s.template.output or "both").lower()
+        layout = None
+        if want in {"image", "docx", "both"}:
+            from svmtrial import render_docx_layout, render_image
+            from svmtrial.template_spec import compose_layout, observed_geometry
 
-        made = {"template_spec.json": "✓", "template_spec.md": "✓", doc.name: "✓"}
+            tcol2 = res["target_column"]
+            tt = targets.dropna(subset=[tcol2])
+            pos = 0.5 if tcol2 == "pass_ratio" else 1
+            pass_ids = [str(d) for d in tt.loc[tt[tcol2] >= pos, "doc_id"].astype(str)]
+            observed = observed_geometry(s, g, pass_ids)
+            checklist = [
+                next((el.title for sec in spec.sections for el in sec.elements
+                      if ev.concept_id in el.evidence_ids), ev.concept_id)
+                for ev in spec.evidence
+            ]
+            try:
+                layout = compose_layout(s, g, gc, spec, observed, checklist)
+                (out_dir / "layout_spec.json").write_text(layout.model_dump_json(indent=1), encoding="utf-8")
+                made["layout_spec.json"] = "✓"
+                if want in {"image", "both"}:
+                    r = render_image.render(layout, out_dir, "template", dpi=s.template.preview_dpi)
+                    made["template.pdf"] = "✓"
+                    made[f"preview/*.png ({len(r['png'])}장)"] = "✓"
+                    made["_font"] = r["font"][0]
+                if want in {"docx", "both"}:
+                    render_docx_layout.render(layout, out_dir / "template.docx", font=s.template.font)
+                    made["template.docx"] = "✓"
+            except Exception as e:  # noqa: BLE001 - 레이아웃 실패가 전체를 막지 않게 한다
+                con.print(f"[yellow]⚠ 레이아웃 생성 실패({type(e).__name__}: {str(e)[:90]}) "
+                          f"— 기존 렌더러로 되돌립니다.[/yellow]")
+                layout = None
+        if layout is None:
+            if spec.doc_format == "slides":
+                doc = render_pptx.render(spec, out_dir / "template.pptx", font=s.template.font)
+            else:
+                doc = render_docx.render(spec, out_dir / "template.docx", font=s.template.font)
+            made[doc.name] = "✓"
         if with_report:
             ing = json.loads((s.work / "ingest" / f"{g.safe}.json").read_text(encoding="utf-8"))
             ocr_sum_f = s.work / "ocr" / f"_summary_{g.safe}.json"
@@ -399,8 +447,9 @@ def _build_outputs(s: Settings, gc: GeminiClient, run_id: str, groups: list[Grou
             "요소 수": sum(len(sec.elements) for sec in spec.sections),
             "근거 없는 요소": n_missing,
             "근거 통계 항목": len(spec.evidence),
+            "레이아웃": (f"{len(layout.pages)}페이지 (LayoutSpec)" if layout else "고정 렌더러(폴백)"),
         })
-        con.print(f"[yellow]🔒 {out_dir / doc.name} 를 사람이 최종 검토한 뒤 배포하세요 (SETUP.md §8.6-4).[/yellow]")
+        con.print(f"[yellow]🔒 {out_dir} 의 템플릿을 사람이 최종 검토한 뒤 배포하세요 (SETUP.md §8.6-4).[/yellow]")
 
 
 @app.command()
@@ -474,7 +523,6 @@ def run_all(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = F
     run_id = new_run_id()
     gc = _client(s, run_id, dry_run, force)
     from svmtrial import concepts as cmod
-    from svmtrial import counterfactual as cfmod
     from svmtrial import ingest as imod
     from svmtrial import labels as lmod
     from svmtrial import modeling as mmod
@@ -526,9 +574,16 @@ def run_all(group: GroupOpt = None, dry_run: DryOpt = False, force: ForceOpt = F
                   f"{res['multivariate'].get('permutation_test', {}).get('p_value')}")
 
         if not res["continuous_target"]:
+            from svmtrial import objective as objmod
+
             Xi, y, _ = mmod.prepare(X, lmod.load_targets(s, g), tcol, sc.get("unstable_concepts"))
-            fit = mmod.fit_svm_weights(s, Xi, y, res["multivariate"].get("primary_model", "svm_C0.1"))
-            cfmod.run(s, g, Xi, y, fit["weights"], fit["intercept"], cmod.load_approved_concepts(s, g))
+            concepts = cmod.load_approved_concepts(s, g)
+            fit = mmod.fit_primary(s, Xi, y, long=lmod.load_long(s, g),
+                                   concept_cols=[c.id for c in concepts if c.id in Xi.columns])
+            obj = objmod.run(s, g, fit, Xi, y, concepts)
+            con.print(f"S5+ objective: 모델 {fit['kind']} / {obj['objective_label']} "
+                      f"최적 {obj['best']['k']}개 → {obj['best']['score']:.4f} "
+                      f"(탐욕=최적 {obj['greedy_is_optimal']})")
 
         _build_outputs(s, gc, run_id, [g], with_report=True)
 

@@ -42,7 +42,7 @@ from svmtrial.textutil import best_section as _best_section
 FIXTURE_REL = "offline_fixtures/pages.json"
 
 # 스텁 규칙을 고칠 때 올린다. 캐시 키에 들어가므로, 규칙이 바뀌면 캐시가 자동 무효화된다.
-STUB_VERSION = "6"
+STUB_VERSION = "7"
 
 
 _TABLE_HINT = re.compile(r"(table|표|목록|list|matrix)", re.IGNORECASE)
@@ -297,6 +297,68 @@ class OfflineBackend:
                 }
             )
         return {"answers": answers}
+
+    def _h_layout_compose(self, *, data: dict, imgs: list, schema: type[BaseModel]) -> dict:
+        """관측 기하와 명세로 페이지 배치를 결정론적으로 만든다 (LLM 대체 스텁).
+
+        문서 종류에 대한 가정 없이 위에서 아래로 흘려 배치한다. 페이지가 넘치면 새 페이지.
+        """
+        obs = data.get("observed", {}) or {}
+        W, H = (obs.get("page_size") or [595.0, 842.0])[:2]
+        W, H = float(W), float(H)
+        M = 45.0                                   # 여백
+        pages: list[dict] = []
+        blocks: list[dict] = []
+        y = M
+
+        def flush() -> None:
+            nonlocal blocks, y
+            if blocks:
+                pages.append({"width": W, "height": H, "blocks": blocks})
+            blocks, y = [], M
+
+        def put(kind: str, h: float, **kw) -> None:
+            nonlocal y
+            if y + h > H - M:
+                flush()
+            blocks.append({"kind": kind, "rect": [M, y, W - M, y + h],
+                           "evidence_ids": kw.pop("evidence_ids", ["skeleton"]), **kw})
+            y += h + 8
+
+        title = data.get("title") or f"{data.get('group', '')} 표준 템플릿"
+        put("title", 32, text=title, font_size=20)
+        if data.get("subtitle"):
+            put("guidance", 20, text=str(data["subtitle"]))
+        put("divider", 2)
+
+        for sec in data.get("skeleton", []):
+            els = sec.get("elements", []) or []
+            put("heading", 22, text=f"{sec.get('order', '')}. {sec.get('title', '')}".strip(". "),
+                font_size=13, evidence_ids=sec.get("evidence_ids", ["skeleton"]))
+            if sec.get("guidance"):
+                put("guidance", 22, text=str(sec["guidance"]), evidence_ids=sec.get("evidence_ids", ["skeleton"]))
+            for el in els:
+                kind = el.get("kind", "text")
+                ev = el.get("evidence_ids", ["skeleton"])
+                if el.get("guidance"):
+                    put("guidance", 22, text=str(el["guidance"]), evidence_ids=ev)
+                if kind == "table":
+                    cols = el.get("table_columns") or ["항목", "내용", "비고"]
+                    put("table", 26 * 4, columns=[str(c) for c in cols], n_rows=3, evidence_ids=ev)
+                elif kind in {"figure", "photo", "chart"}:
+                    put("figure_placeholder", 150, text=str(el.get("guidance") or el.get("title", "")), evidence_ids=ev)
+                elif kind == "signature":
+                    put("signature", 56, columns=[str(c) for c in (el.get("table_columns") or ["작성", "검토", "승인"])],
+                        evidence_ids=ev)
+
+        items = [str(x) for x in (data.get("checklist") or [])]
+        if items:
+            put("heading", 22, text="제출 전 체크리스트", font_size=13)
+            put("checklist", 16 * len(items) + 6, items=items)
+        flush()
+        if not pages:
+            pages = [{"width": W, "height": H, "blocks": []}]
+        return {"pages": pages, "rationale": "관측 페이지 크기를 따르고 섹션 순서대로 위에서 아래로 배치했다(오프라인 스텁)."}
 
     def _h_template_compose(self, *, data: dict, imgs: list, schema: type[BaseModel]) -> dict:
         """골격 + 등급 개념 → TemplateSpecLLM. 플레이스홀더만 쓴다 (R10)."""

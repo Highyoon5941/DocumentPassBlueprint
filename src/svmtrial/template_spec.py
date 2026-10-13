@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from statistics import median
@@ -22,7 +23,15 @@ from svmtrial.gemini_client import DryRunHit, GeminiClient, load_prompt, prompt_
 from svmtrial.groups import Group, work_dir
 from svmtrial.ocr import load_outline
 from svmtrial.payload import wrap
-from svmtrial.schemas import Concept, Element, Evidence, Section, TemplateSpec, TemplateSpecLLM
+from svmtrial.schemas import (
+    Concept,
+    Element,
+    Evidence,
+    LayoutSpec,
+    Section,
+    TemplateSpec,
+    TemplateSpecLLM,
+)
 from svmtrial.sections import load_doc_sections
 
 GOOD_VERDICTS = ("확정", "유력")
@@ -225,8 +234,21 @@ def _fill_stats(
         for el in d["elements"]:
             ids = [i for i in el.get("evidence_ids", []) if i]
             el["required"] = bool(set(ids) & confirmed)
-            if el.get("kind") == "table" and not el.get("table_columns") and k:
-                el["table_columns"] = k.get("table_columns")
+            if el.get("kind") == "table" and not el.get("table_columns"):
+                # ① 섹션 골격에서 관측된 대표 열 구성
+                cols = k.get("table_columns") if k else None
+                # ② 없으면 개념 문구의 인용구에서 열 이름을 뽑는다
+                #    (예: '"5-Why analysis table: Why1 | Why2 | Why3" ...' → [Why1, Why2, Why3])
+                if not cols:
+                    for cid in ids:
+                        c = cmap.get(cid)
+                        if not c:
+                            continue
+                        guess = _columns_from_phrase(c.get("question", ""))
+                        if guess:
+                            cols = guess
+                            break
+                el["table_columns"] = cols
             # 통계 구절이 비어 있으면 코드가 붙인다
             for cid in ids:
                 c = cmap.get(cid)
@@ -335,6 +357,24 @@ def run(
     return spec
 
 
+_COL_SPLIT = re.compile(r"\s*[|/]\s*|\s{2,}|\s*>\s*")
+
+
+def _columns_from_phrase(question: str) -> list[str] | None:
+    """개념 질문의 인용 문구에서 표의 열 이름을 추출한다.
+
+    개념 문구는 OCR 이 읽은 표 캡션에서 왔으므로 'X표: A | B | C' 꼴이 흔하다.
+    골격에서 대표 열 구성을 못 구했을 때의 보조 수단이다.
+    """
+    from svmtrial import textutil as tu
+
+    phrase = tu.quoted_phrase(question or "")
+    if not phrase or ":" not in phrase:
+        return None
+    cols = [c.strip()[:24] for c in _COL_SPLIT.split(phrase.split(":", 1)[1]) if c.strip()]
+    return cols[:8] if len(cols) >= 2 else None
+
+
 def _group_format(s: Settings, g: Group) -> str:
     f = s.work / "ingest" / f"{g.safe}.json"
     if f.exists():
@@ -375,3 +415,79 @@ def load_spec(s: Settings, g: Group) -> TemplateSpec:
     if not f.exists():
         raise FileNotFoundError(f"{f} 가 없습니다 — 먼저 `svmtrial template` 를 실행하세요.")
     return TemplateSpec.model_validate_json(f.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- 레이아웃 (출력 형식 자유화)
+
+
+def observed_geometry(s: Settings, g: Group, pass_ids: list[str]) -> dict:
+    """Pass 문서에서 실제로 관측된 지면 기하. LayoutSpec 생성의 근거가 된다.
+
+    문서 종류를 가정하지 않는다 — 관측값만 모은다.
+    """
+    from statistics import median
+
+    widths, heights, pages, tables_per_page = [], [], [], []
+    for d in pass_ids:
+        o = load_outline(s, d)
+        n = max(1, int(o.get("n_pages") or 1))
+        pages.append(float(n))
+        tables_per_page.append(len(o.get("tables", [])) / n)
+        meta_f = s.work / "pages" / d / "meta.json"
+        if meta_f.exists():
+            m = json.loads(meta_f.read_text(encoding="utf-8"))
+            for r in (m.get("page_ratios") or []):
+                # 비율만 알고 실제 pt 는 모르므로 A4 단변을 기준으로 환산한다
+                if float(r) >= 1.0:          # 가로형
+                    widths.append(842.0)
+                    heights.append(842.0 / float(r))
+                else:
+                    widths.append(595.0)
+                    heights.append(595.0 / float(r))
+    w = median(widths) if widths else 595.0
+    h = median(heights) if heights else 842.0
+    return {
+        "page_size": [round(w, 1), round(h, 1)],
+        "orientation": "landscape" if w > h else "portrait",
+        "median_pages": median(pages) if pages else 1.0,
+        "median_tables_per_page": round(median(tables_per_page), 2) if tables_per_page else 0.0,
+        "n_pass_docs": len(pass_ids),
+    }
+
+
+def compose_layout(
+    s: Settings, g: Group, gc: GeminiClient, spec: TemplateSpec, observed: dict,
+    checklist: list[str],
+) -> LayoutSpec:
+    """TemplateSpec(무엇을) + 관측 기하 → LayoutSpec(어떻게 배치할지)."""
+    skeleton = [
+        {
+            "order": sec.order, "section_id": sec.section_id, "title": sec.title,
+            "guidance": sec.guidance, "evidence_ids": sec.evidence_ids,
+            "elements": [
+                {"kind": el.kind, "title": el.title, "guidance": el.guidance,
+                 "table_columns": el.table_columns, "evidence_ids": el.evidence_ids}
+                for el in sec.elements
+            ],
+        }
+        for sec in spec.sections
+    ]
+    data = {
+        "group": g.key, "doc_type": g.doc_type,
+        "title": f"{g.doc_type} 표준 템플릿",
+        "subtitle": f"[작성 가이드] {spec.target_definition} 기준으로 도출됐다. "
+                    f"문서 {spec.n_docs}건 중 Pass {spec.n_target_pass}건. 실제 내용은 작성자가 채운다.",
+        "observed": observed,
+        "skeleton": skeleton,
+        "global_rules": [
+            {"kind": el.kind, "title": el.title, "guidance": el.guidance,
+             "table_columns": el.table_columns, "evidence_ids": el.evidence_ids}
+            for el in spec.global_rules
+        ],
+        "checklist": checklist,
+    }
+    prompt = load_prompt(s, "layout_compose.v1", data_block=wrap(data))
+    return gc.generate_json(
+        model=s.model_for("pro"), prompt_id="layout_compose.v1",
+        parts=[P.text(prompt)], schema=LayoutSpec, cache_key_extra=g.safe,
+    )
